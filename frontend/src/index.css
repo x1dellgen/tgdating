@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Базовые стили с темой Telegram */
+:root {
+  --tg-theme-bg-color: #fff;
+  --tg-theme-text-color: #222;
+  --tg-theme-hint-color: #999;
+  --tg-theme-link-color: #3390ec;
+  --tg-theme-button-color: #3390ec;
+  --tg-theme-button-text-color: #fff;
+  --tg-theme-secondary-bg-color: #f0f0f0;
+}
+
+/* Премиальная тёмная тема по умолчанию (для окружения вне Telegram) */
+:root {
+  --app-bg: #0b0e17;
+  --app-bg-gradient: radial-gradient(ellipse at 50% 0%, #1a1f35 0%, #0b0e17 65%);
+  --app-text: #ffffff;
+  --app-hint: #94a3b8;
+  --app-link: #60a5fa;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  /* Telegram-тема имеет приоритет; иначе — наш премиальный тёмный фолбэк */
+  color: var(--tg-theme-text-color, var(--app-text));
+  background: var(--tg-theme-bg-color, var(--app-bg));
+  background-image: var(--app-bg-gradient);
+  background-attachment: fixed;
+  overflow: hidden;
+  height: 100dvh;
+}
+
+#root {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Скрыть полосу прокрутки (используется в фильтрах и тегах) */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Безопасные зоны для мобильных (iOS + Android) */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

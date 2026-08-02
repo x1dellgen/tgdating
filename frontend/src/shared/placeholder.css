@@ -1,0 +1,14 @@
+.placeholder-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.placeholder-text {
+  font-size: 17px;
+  color: var(--tg-theme-hint-color, #999);
+  text-align: center;
+  line-height: 1.5;
+}
