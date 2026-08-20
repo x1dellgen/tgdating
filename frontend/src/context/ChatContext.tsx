@@ -152,49 +152,53 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   /* ─── Синхронизация тредов с мэтчами ─── */
 
-  useEffect(() => {
-    if (!currentUserId || matchesList.length === 0) return;
+  // Создаём / обновляем треды на основе matchesList (adjust state during render)
+  const [processedMatchIds, setProcessedMatchIds] = useState<Set<string>>(new Set());
+  if (currentUserId && matchesList.length > 0) {
+    const newMatches = matchesList.filter((m) => !processedMatchIds.has(m.id));
+    if (newMatches.length > 0) {
+      const newIds = new Set(processedMatchIds);
+      newMatches.forEach((m) => newIds.add(m.id));
+      setProcessedMatchIds(newIds);
+      setThreads((prev) => {
+        const existingIds = new Set(prev.map((t) => t.profile.id));
+        const newThreads: ChatThread[] = [];
 
-    // Создаём / обновляем треды на основе matchesList
-    setThreads((prev) => {
-      const existingIds = new Set(prev.map((t) => t.profile.id));
-      const newThreads: ChatThread[] = [];
+        for (const match of newMatches) {
+          const partner = match.partner;
+          if (!existingIds.has(partner.id)) {
+            const profile: MockProfile = {
+              id: partner.id,
+              name: partner.name,
+              age: partner.age ?? 0,
+              city: partner.city ?? '',
+              bio: partner.bio ?? '',
+              photos: partner.photos.map(resolvePhotoUrl),
+              interests: [],
+              goal: '',
+            };
 
-      for (const match of matchesList) {
-        const partner = match.partner;
-        if (!existingIds.has(partner.id)) {
-          // Создаём новый тред
-          const profile: MockProfile = {
-            id: partner.id,
-            name: partner.name,
-            age: partner.age ?? 0,
-            city: partner.city ?? '',
-            bio: partner.bio ?? '',
-            photos: partner.photos.map(resolvePhotoUrl),
-            interests: [],
-            goal: '',
-          };
+            let lastMessage = 'Нет сообщений';
+            if (match.lastMessage) {
+              lastMessage = match.lastMessage.text || 'Сообщение';
+              if (match.lastMessage.audioUrl) lastMessage = '🎙️ Голосовое';
+              if (match.lastMessage.attachments?.length > 0) lastMessage = '📷 Фото';
+            }
 
-          let lastMessage = 'Нет сообщений';
-          if (match.lastMessage) {
-            lastMessage = match.lastMessage.text || 'Сообщение';
-            if (match.lastMessage.audioUrl) lastMessage = '🎙️ Голосовое';
-            if (match.lastMessage.attachments?.length > 0) lastMessage = '📷 Фото';
+            newThreads.push({
+              profile,
+              messages: [],
+              lastMessage,
+              matchId: match.id,
+            });
           }
-
-          newThreads.push({
-            profile,
-            messages: [],
-            lastMessage,
-            matchId: match.id,
-          });
         }
-      }
 
-      if (newThreads.length === 0) return prev;
-      return [...prev, ...newThreads];
-    });
-  }, [matchesList, currentUserId]);
+        if (newThreads.length === 0) return prev;
+        return [...prev, ...newThreads];
+      });
+    }
+  }
 
   /* ─── Открытие чата ─── */
 

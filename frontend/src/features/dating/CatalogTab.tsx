@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useScreen } from '../../context/ScreenContext';
 import { useRegistration } from '../../context/RegistrationContext';
 import { useMatch } from '../../context/MatchContext';
@@ -91,13 +91,13 @@ function FilterBottomSheet({
   const [localMin, setLocalMin] = useState(String(ageMin));
   const [localMax, setLocalMax] = useState(String(ageMax));
 
-  // Синхронизируем при открытии шторки
-  useEffect(() => {
-    if (isOpen) {
-      setLocalMin(String(ageMin));
-      setLocalMax(String(ageMax));
-    }
-  }, [isOpen, ageMin, ageMax]);
+  // Синхронизируем при открытии шторки (adjust state during render)
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen && !prevIsOpen) {
+    setPrevIsOpen(isOpen);
+    setLocalMin(String(ageMin));
+    setLocalMax(String(ageMax));
+  }
 
   const handleMinBlur = () => {
     const num = parseInt(localMin, 10);

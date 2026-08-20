@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 interface TelegramWebApp {
   ready: () => void;
@@ -14,18 +14,16 @@ interface TelegramWebApp {
  * Безопасно работает вне Telegram (возвращает заглушку).
  */
 export function useTelegram() {
-  const [webApp, setWebApp] = useState<TelegramWebApp | null>(null);
-
-  useEffect(() => {
+  const [webApp] = useState<TelegramWebApp | null>(() => {
     const tg = (window as unknown as { Telegram?: { WebApp?: TelegramWebApp } })
       .Telegram?.WebApp;
 
     if (tg) {
       tg.ready();
       tg.expand();
-      setWebApp(tg);
     }
-  }, []);
+    return tg ?? null;
+  });
 
   return { webApp };
 }

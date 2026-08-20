@@ -88,11 +88,13 @@ function VoiceMessage({ duration, isSelf, audioUrl }: { duration: number; isSelf
       });
     }
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
+      const audio = audioRef.current;
+      if (audio) {
+        audio.pause();
         audioRef.current = null;
       }
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      const interval = intervalRef.current;
+      if (interval) clearInterval(interval);
     };
   }, [audioUrl]);
 
@@ -108,16 +110,10 @@ function VoiceMessage({ duration, isSelf, audioUrl }: { duration: number; isSelf
     }
   }, [isPlaying]);
 
-  // Генерация псевдо-волны (набор высот баров)
-  const bars = useRef<number[]>([]);
-  if (bars.current.length === 0) {
-    const count = 28;
-    for (let i = 0; i < count; i++) {
-      bars.current.push(8 + Math.random() * 24);
-    }
-  }
+  // Генерация псевдо-волны (набор высот баров) — useState lazy init допускает impure-функции
+  const [bars] = useState(() => Array.from({ length: 28 }, () => 8 + Math.random() * 24));
 
-  const playedBars = Math.floor((progress / 100) * bars.current.length);
+  const playedBars = Math.floor((progress / 100) * bars.length);
 
   return (
     <div className="flex items-center gap-2.5 min-w-[180px]">
@@ -142,7 +138,7 @@ function VoiceMessage({ duration, isSelf, audioUrl }: { duration: number; isSelf
       </button>
 
       <div className="flex-1 flex items-center gap-[2px] h-8">
-        {bars.current.map((h, i) => (
+        {bars.map((h, i) => (
           <div
             key={i}
             className="flex-1 rounded-full transition-all duration-75"
@@ -645,12 +641,42 @@ function ChatWindow() {
   // Очистка при размонтировании
   useEffect(() => {
     return () => {
-      if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      const interval = recordingIntervalRef.current;
+      if (interval) clearInterval(interval);
+      const stream = audioStreamRef.current;
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
       }
     };
   }, []);
+
+  // stopRecordingAndSend — обёрнут в useCallback для стабильных зависимостей handleHoldEnd
+  const stopRecordingAndSend = useCallback(() => {
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }, []);
+
+  // handleHoldEnd — хук (useCallback), должен быть до условного return
+  const handleHoldEnd = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    const holdDuration = Date.now() - holdStartRef.current;
+    if (holdDuration < 300 && !isRecording) {
+      showToast('🎙️ Удерживайте для записи');
+      return;
+    }
+    if (isRecording) {
+      stopRecordingAndSend();
+    }
+  }, [isRecording, stopRecordingAndSend]);
 
   if (!thread) {
     return (
@@ -786,17 +812,6 @@ function ChatWindow() {
     }
   };
 
-  const stopRecordingAndSend = () => {
-    if (recordingIntervalRef.current) {
-      clearInterval(recordingIntervalRef.current);
-      recordingIntervalRef.current = null;
-    }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    setIsRecording(false);
-  };
-
   const cancelRecording = () => {
     setIsCancelling(true);
     if (recordingIntervalRef.current) {
@@ -825,21 +840,6 @@ function ChatWindow() {
       startRecording();
     }, 200); // 200ms для определения удержания
   };
-
-  const handleHoldEnd = useCallback(() => {
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = null;
-    }
-    const holdDuration = Date.now() - holdStartRef.current;
-    if (holdDuration < 300 && !isRecording) {
-      showToast('🎙️ Удерживайте для записи');
-      return;
-    }
-    if (isRecording) {
-      stopRecordingAndSend();
-    }
-  }, [isRecording, stopRecordingAndSend]);
 
   const handleUnmatch = () => {
     setShowDropdown(false);

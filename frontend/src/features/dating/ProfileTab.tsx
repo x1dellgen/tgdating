@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useRegistration } from '../../context/RegistrationContext';
 import { useScreen } from '../../context/ScreenContext';
 import { calculateAge, AVAILABLE_INTERESTS, AVAILABLE_RELATIONSHIP_GOALS, type RegistrationForm } from '../../shared/constants';
@@ -166,12 +166,15 @@ function EditForm({
   const computedAge = draft.birthDate ? calculateAge(draft.birthDate) : null;
   const ageValid = computedAge !== null && computedAge >= 14;
 
-  useEffect(() => {
+  // Синхронизация локальных полей даты при изменении draft.birthDate (adjust state during render)
+  const [prevDraftBirthDate, setPrevDraftBirthDate] = useState(draft.birthDate);
+  if (draft.birthDate !== prevDraftBirthDate) {
+    setPrevDraftBirthDate(draft.birthDate);
     const [d, m, y] = parseBirthDate(draft.birthDate);
     setLocalDay(d);
     setLocalMonth(m);
     setLocalYear(y);
-  }, [draft.birthDate]);
+  }
 
   const trySyncDate = useCallback(
     (day: string, month: string, year: string) => {
@@ -488,12 +491,12 @@ export function ProfileTab() {
   // Локальная копия формы для редактирования
   const [draft, setDraft] = useState<RegistrationForm>(form);
 
-  // При входе в режим редактирования — копируем текущий form в draft
-  useEffect(() => {
-    if (isEditing) {
-      setDraft({ ...form });
-    }
-  }, [isEditing, form]);
+  // При входе в режим редактирования — копируем текущий form в draft (adjust state during render)
+  const [prevIsEditing, setPrevIsEditing] = useState(isEditing);
+  if (isEditing && !prevIsEditing) {
+    setPrevIsEditing(isEditing);
+    setDraft({ ...form });
+  }
 
   const computedAge = draft.birthDate ? calculateAge(draft.birthDate) : null;
   const ageValid = computedAge !== null && computedAge >= 14;

@@ -1,4 +1,4 @@
-import { useRef, useCallback, useMemo, useState, useEffect } from 'react';
+import { useRef, useCallback, useMemo, useState } from 'react';
 import { useRegistration } from '../../context/RegistrationContext';
 import { calculateAge } from '../../shared/constants';
 
@@ -42,12 +42,14 @@ export function StepBio() {
   const [localYear, setLocalYear] = useState('');
 
   // Синхронизация локального стейта при внешнем изменении birthDate (например, сброс формы)
-  useEffect(() => {
+  const [prevBirthDate, setPrevBirthDate] = useState(birthDate);
+  if (birthDate !== prevBirthDate) {
+    setPrevBirthDate(birthDate);
     const [d, m, y] = parseBirthDate(birthDate);
     setLocalDay(d);
     setLocalMonth(m);
     setLocalYear(y);
-  }, [birthDate]);
+  }
 
   const computedAge = useMemo(() => {
     if (!birthDate) return null;
