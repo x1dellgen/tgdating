@@ -4,10 +4,15 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
   type ReactNode,
 } from 'react';
 import type { MockProfile } from '../features/swipes/mockProfiles';
 import { useRegistration } from './RegistrationContext';
+import { useMatch } from './MatchContext';
+import { http, getSocket, UPLOADS_BASE_URL } from '../api/client';
+import type { ApiMessage } from '../api/types';
+import type { Socket } from 'socket.io-client';
 
 export interface ChatMessage {
   id: string;
@@ -25,12 +30,14 @@ export interface ChatThread {
   profile: MockProfile;
   messages: ChatMessage[];
   lastMessage: string;
+  /** ID мэтча на бэкенде (для API-запросов и Socket.io) */
+  matchId?: string;
 }
 
 interface ChatContextValue {
   threads: ChatThread[];
   activeThreadId: string | null;
-  openChat: (profile: MockProfile) => void;
+  openChat: (profile: MockProfile, matchId?: string) => void;
   closeChat: () => void;
   sendMessage: (text: string) => void;
   sendPhoto: (url: string) => void;
@@ -38,57 +45,194 @@ interface ChatContextValue {
   sendVoice: (duration: number, audioUrl: string) => void;
   shareTelegram: () => void;
   getActiveThread: () => ChatThread | null;
+  /** Загрузить историю сообщений из API */
+  loadMessages: (matchId: string) => Promise<void>;
+  /** Индикатор набора текста собеседником */
+  typingUsers: Record<string, boolean>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
 
-// Ответы для эмуляции
-const BOT_REPLIES = [
-  'Привет! Классная анкета, чем занимаешься?',
-  'Приветик) Рад(а) мэтчу!',
-  'Ого, у нас много общего! Как настроение?',
-  'Давай поболтаем! Что любишь делать в свободное время?',
-  'Круто! А ты давно пользуешься этим приложением?',
-  'Хах, у тебя забавное био! Расскажешь подробнее о себе?',
-];
+/** Преобразует URL фото: если это относительный путь бэкенда, добавляет базовый URL */
+function resolvePhotoUrl(url: string): string {
+  if (url.startsWith('/uploads/')) {
+    return `${UPLOADS_BASE_URL}${url}`;
+  }
+  return url;
+}
 
-// Тестовые изображения для фотовложений
-const TEST_PHOTO_URLS = [
-  'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop',
-  'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=400&h=300&fit=crop',
-  'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=400&h=300&fit=crop',
-  'https://images.unsplash.com/photo-1433086966358-54859d0ed716?w=400&h=300&fit=crop',
-];
+/** Преобразует API-сообщение в формат фронтенда */
+function mapApiMessage(msg: ApiMessage, currentUserId: string): ChatMessage {
+  const isSelf = msg.senderId === currentUserId;
 
-let nextMsgId = 0;
-function genId(): string {
-  nextMsgId += 1;
-  return `msg_${nextMsgId}_${Date.now()}`;
+  // Определяем тип сообщения
+  let type: ChatMessage['type'] = 'text';
+  if (msg.attachments && msg.attachments.length > 0) {
+    type = 'photo';
+  } else if (msg.audioUrl) {
+    type = 'voice';
+  }
+
+  return {
+    id: msg.id,
+    text: msg.text || '',
+    sender: isSelf ? 'self' : 'other',
+    type,
+    timestamp: new Date(msg.createdAt).getTime(),
+    photoUrl: msg.attachments?.length === 1 ? resolvePhotoUrl(msg.attachments[0]) : undefined,
+    photoUrls: msg.attachments?.length > 1 ? msg.attachments.map(resolvePhotoUrl) : undefined,
+    audioUrl: msg.audioUrl ? resolvePhotoUrl(msg.audioUrl) : undefined,
+    voiceDuration: msg.duration ?? undefined,
+  };
 }
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  // Читаем имя пользователя для персонализации системных сообщений
+  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
   const registration = useRegistration();
+  const { currentUserId, matchesList } = useMatch();
   const userName = registration.form.name || 'Ты';
 
-  const openChat = useCallback((profile: MockProfile) => {
+  // Ref для хранения сокета
+  const socketRef = useRef<Socket | null>(null);
+
+  /* ─── Подключение к Socket.io ─── */
+
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const socket = getSocket();
+    if (!socket) return;
+    socketRef.current = socket;
+
+    // Слушаем новые сообщения
+    const onNewMessage = (msg: ApiMessage) => {
+      const mapped = mapApiMessage(msg, currentUserId);
+      const matchId = msg.matchId;
+
+      setThreads((prev) =>
+        prev.map((t) => {
+          if (t.matchId !== matchId) return t;
+          // Избегаем дубликатов
+          if (t.messages.some((m) => m.id === mapped.id)) return t;
+          const newMessages = [...t.messages, mapped];
+          return {
+            ...t,
+            messages: newMessages,
+            lastMessage: mapped.type === 'photo' ? '📷 Фото' :
+              mapped.type === 'voice' ? '🎙️ Голосовое' :
+              mapped.text || 'Сообщение',
+          };
+        }),
+      );
+    };
+
+    // Слушаем typing
+    const onTypingStart = ({ matchId, userId }: { matchId: string; userId: string }) => {
+      if (userId === currentUserId) return;
+      setTypingUsers((prev) => ({ ...prev, [matchId]: true }));
+    };
+
+    const onTypingStop = ({ matchId, userId }: { matchId: string; userId: string }) => {
+      if (userId === currentUserId) return;
+      setTypingUsers((prev) => ({ ...prev, [matchId]: false }));
+    };
+
+    socket.on('new_message', onNewMessage);
+    socket.on('typing_start', onTypingStart);
+    socket.on('typing_stop', onTypingStop);
+
+    return () => {
+      socket.off('new_message', onNewMessage);
+      socket.off('typing_start', onTypingStart);
+      socket.off('typing_stop', onTypingStop);
+    };
+  }, [currentUserId]);
+
+  /* ─── Синхронизация тредов с мэтчами ─── */
+
+  useEffect(() => {
+    if (!currentUserId || matchesList.length === 0) return;
+
+    // Создаём / обновляем треды на основе matchesList
     setThreads((prev) => {
-      const existing = prev.find((t) => t.profile.id === profile.id);
-      if (existing) {
-        setActiveThreadId(existing.profile.id);
-        return prev;
+      const existingIds = new Set(prev.map((t) => t.profile.id));
+      const newThreads: ChatThread[] = [];
+
+      for (const match of matchesList) {
+        const partner = match.partner;
+        if (!existingIds.has(partner.id)) {
+          // Создаём новый тред
+          const profile: MockProfile = {
+            id: partner.id,
+            name: partner.name,
+            age: partner.age ?? 0,
+            city: partner.city ?? '',
+            bio: partner.bio ?? '',
+            photos: partner.photos.map(resolvePhotoUrl),
+            interests: [],
+            goal: '',
+          };
+
+          let lastMessage = 'Нет сообщений';
+          if (match.lastMessage) {
+            lastMessage = match.lastMessage.text || 'Сообщение';
+            if (match.lastMessage.audioUrl) lastMessage = '🎙️ Голосовое';
+            if (match.lastMessage.attachments?.length > 0) lastMessage = '📷 Фото';
+          }
+
+          newThreads.push({
+            profile,
+            messages: [],
+            lastMessage,
+            matchId: match.id,
+          });
+        }
       }
-      const newThread: ChatThread = {
-        profile,
-        messages: [],
-        lastMessage: 'Вы поймали мэтч!',
-      };
-      setActiveThreadId(newThread.profile.id);
-      return [...prev, newThread];
+
+      if (newThreads.length === 0) return prev;
+      return [...prev, ...newThreads];
     });
-  }, []);
+  }, [matchesList, currentUserId]);
+
+  /* ─── Открытие чата ─── */
+
+  const openChat = useCallback(
+    (profile: MockProfile, matchId?: string) => {
+      setThreads((prev) => {
+        const existing = prev.find((t) => t.profile.id === profile.id);
+        if (existing) {
+          // Обновляем matchId, если передан
+          if (matchId && !existing.matchId) {
+            setActiveThreadId(existing.profile.id);
+            return prev.map((t) =>
+              t.profile.id === profile.id ? { ...t, matchId } : t,
+            );
+          }
+          setActiveThreadId(existing.profile.id);
+          return prev;
+        }
+        const newThread: ChatThread = {
+          profile,
+          messages: [],
+          lastMessage: 'Вы поймали мэтч!',
+          matchId,
+        };
+        setActiveThreadId(newThread.profile.id);
+        return [...prev, newThread];
+      });
+
+      // Присоединяемся к комнате мэтча
+      if (matchId) {
+        const socket = socketRef.current;
+        if (socket?.connected) {
+          socket.emit('join_chat', { matchId });
+        }
+      }
+    },
+    [],
+  );
 
   const closeChat = useCallback(() => {
     setActiveThreadId(null);
@@ -99,36 +243,69 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     return threads.find((t) => t.profile.id === activeThreadId) ?? null;
   }, [activeThreadId, threads]);
 
+  /* ─── Загрузка истории сообщений ─── */
+
+  const loadMessages = useCallback(
+    async (matchId: string) => {
+      try {
+        const { data } = await http.get<{ messages: ApiMessage[] }>(
+          `/api/matches/${matchId}/messages`,
+          { params: { limit: 100 } },
+        );
+
+        if (!currentUserId) return;
+
+        // Маппим сообщения и переворачиваем (API возвращает DESC)
+        const messages = data.messages
+          .map((m) => mapApiMessage(m, currentUserId))
+          .reverse();
+
+        // Обновляем тред
+        setThreads((prev) =>
+          prev.map((t) => {
+            if (t.matchId !== matchId) return t;
+            const lastMsg = messages[messages.length - 1];
+            return {
+              ...t,
+              messages,
+              lastMessage: lastMsg
+                ? lastMsg.type === 'photo' ? '📷 Фото' :
+                  lastMsg.type === 'voice' ? '🎙️ Голосовое' :
+                  lastMsg.text || 'Сообщение'
+                : 'Нет сообщений',
+            };
+          }),
+        );
+      } catch (err) {
+        console.error('[ChatContext] Ошибка загрузки сообщений:', err);
+      }
+    },
+    [currentUserId],
+  );
+
+  /* ─── Отправка текстового сообщения ─── */
+
   const sendMessage = useCallback(
     (text: string) => {
       if (!activeThreadId || !text.trim()) return;
 
-      const userMsg: ChatMessage = {
-        id: genId(),
-        text: text.trim(),
-        sender: 'self',
-        type: 'text',
-        timestamp: Date.now(),
-      };
+      const thread = threads.find((t) => t.profile.id === activeThreadId);
+      if (!thread) return;
 
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.profile.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, userMsg],
-            lastMessage: text.trim(),
-          };
-        }),
-      );
+      const socket = socketRef.current;
 
-      // Эмуляция ответа через 1.5–2 секунды
-      setTimeout(() => {
-        const botText = BOT_REPLIES[Math.floor(Math.random() * BOT_REPLIES.length)];
-        const botMsg: ChatMessage = {
-          id: genId(),
-          text: botText,
-          sender: 'other',
+      if (thread.matchId && socket?.connected) {
+        // Отправляем через Socket.io
+        socket.emit('send_message', {
+          matchId: thread.matchId,
+          text: text.trim(),
+        });
+      } else {
+        // Fallback: локальное сообщение (для моков / оффлайна)
+        const localMsg: ChatMessage = {
+          id: `local_${Date.now()}`,
+          text: text.trim(),
+          sender: 'self',
           type: 'text',
           timestamp: Date.now(),
         };
@@ -137,49 +314,39 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (t.profile.id !== activeThreadId) return t;
             return {
               ...t,
-              messages: [...t.messages, botMsg],
-              lastMessage: botText,
+              messages: [...t.messages, localMsg],
+              lastMessage: text.trim(),
             };
           }),
         );
-      }, 1500 + Math.random() * 500);
+      }
     },
-    [activeThreadId],
+    [activeThreadId, threads],
   );
+
+  /* ─── Отправка фото ─── */
 
   const sendPhoto = useCallback(
     (url: string) => {
       if (!activeThreadId || !url.trim()) return;
 
-      const userMsg: ChatMessage = {
-        id: genId(),
-        text: '',
-        sender: 'self',
-        type: 'photo',
-        photoUrl: url,
-        timestamp: Date.now(),
-      };
+      const thread = threads.find((t) => t.profile.id === activeThreadId);
+      if (!thread) return;
 
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.profile.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, userMsg],
-            lastMessage: '📷 Фото',
-          };
-        }),
-      );
+      const socket = socketRef.current;
 
-      // Эмуляция ответа через 2–3 секунды
-      setTimeout(() => {
-        const replyUrl = TEST_PHOTO_URLS[Math.floor(Math.random() * TEST_PHOTO_URLS.length)];
-        const botMsg: ChatMessage = {
-          id: genId(),
+      if (thread.matchId && socket?.connected) {
+        socket.emit('send_message', {
+          matchId: thread.matchId,
+          attachments: [url],
+        });
+      } else {
+        const localMsg: ChatMessage = {
+          id: `local_${Date.now()}`,
           text: '',
-          sender: 'other',
+          sender: 'self',
           type: 'photo',
-          photoUrl: replyUrl,
+          photoUrl: url,
           timestamp: Date.now(),
         };
         setThreads((prev) =>
@@ -187,105 +354,84 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (t.profile.id !== activeThreadId) return t;
             return {
               ...t,
-              messages: [...t.messages, botMsg],
+              messages: [...t.messages, localMsg],
               lastMessage: '📷 Фото',
             };
           }),
         );
-      }, 2000 + Math.random() * 1000);
+      }
     },
-    [activeThreadId],
+    [activeThreadId, threads],
   );
+
+  /* ─── Отправка нескольких фото ─── */
 
   const sendPhotos = useCallback(
     (urls: string[]) => {
       if (!activeThreadId || urls.length === 0) return;
 
+      const thread = threads.find((t) => t.profile.id === activeThreadId);
+      if (!thread) return;
+
       const limited = urls.slice(0, 10);
-      const userMsg: ChatMessage = {
-        id: genId(),
-        text: '',
-        sender: 'self',
-        type: 'photo',
-        photoUrls: limited,
-        photoUrl: limited.length === 1 ? limited[0] : undefined,
-        timestamp: Date.now(),
-      };
+      const socket = socketRef.current;
 
-      const label = limited.length === 1 ? '📷 Фото' : `📷 ${limited.length} фото`;
-
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.profile.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, userMsg],
-            lastMessage: label,
-          };
-        }),
-      );
-
-      // Эмуляция ответа через 2–3 секунды
-      setTimeout(() => {
-        const replyUrl = TEST_PHOTO_URLS[Math.floor(Math.random() * TEST_PHOTO_URLS.length)];
-        const botMsg: ChatMessage = {
-          id: genId(),
+      if (thread.matchId && socket?.connected) {
+        socket.emit('send_message', {
+          matchId: thread.matchId,
+          attachments: limited,
+        });
+      } else {
+        const localMsg: ChatMessage = {
+          id: `local_${Date.now()}`,
           text: '',
-          sender: 'other',
+          sender: 'self',
           type: 'photo',
-          photoUrl: replyUrl,
+          photoUrls: limited,
+          photoUrl: limited.length === 1 ? limited[0] : undefined,
           timestamp: Date.now(),
         };
+        const label = limited.length === 1 ? '📷 Фото' : `📷 ${limited.length} фото`;
         setThreads((prev) =>
           prev.map((t) => {
             if (t.profile.id !== activeThreadId) return t;
             return {
               ...t,
-              messages: [...t.messages, botMsg],
-              lastMessage: '📷 Фото',
+              messages: [...t.messages, localMsg],
+              lastMessage: label,
             };
           }),
         );
-      }, 2000 + Math.random() * 1000);
+      }
     },
-    [activeThreadId],
+    [activeThreadId, threads],
   );
+
+  /* ─── Отправка голосового ─── */
 
   const sendVoice = useCallback(
     (duration: number, audioUrl: string) => {
       if (!activeThreadId) return;
 
-      const userMsg: ChatMessage = {
-        id: genId(),
-        text: '',
-        sender: 'self',
-        type: 'voice',
-        voiceDuration: duration,
-        audioUrl,
-        timestamp: Date.now(),
-      };
+      const thread = threads.find((t) => t.profile.id === activeThreadId);
+      if (!thread) return;
 
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.profile.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, userMsg],
-            lastMessage: '🎙️ Голосовое',
-          };
-        }),
-      );
+      const socket = socketRef.current;
 
-      // Эмуляция голосового ответа через 2–3 секунды
-      setTimeout(() => {
-        const replyDuration = 5 + Math.floor(Math.random() * 25);
-        const botMsg: ChatMessage = {
-          id: genId(),
+      if (thread.matchId && socket?.connected) {
+        socket.emit('send_message', {
+          matchId: thread.matchId,
+          audioUrl,
+          duration,
+        });
+      } else {
+        const localMsg: ChatMessage = {
+          id: `local_${Date.now()}`,
           text: '',
-          sender: 'other',
+          sender: 'self',
           type: 'voice',
-          voiceDuration: replyDuration,
-          audioUrl: '',
+          voiceDuration: duration,
+          audioUrl,
           timestamp: Date.now(),
         };
         setThreads((prev) =>
@@ -293,14 +439,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (t.profile.id !== activeThreadId) return t;
             return {
               ...t,
-              messages: [...t.messages, botMsg],
+              messages: [...t.messages, localMsg],
               lastMessage: '🎙️ Голосовое',
             };
           }),
         );
-      }, 2000 + Math.random() * 1000);
+      }
     },
-    [activeThreadId],
+    [activeThreadId, threads],
   );
 
   // Слушаем кастомное событие на удаление треда (unmatch)
@@ -321,7 +467,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     const username = '@durov';
     const systemMsg: ChatMessage = {
-      id: genId(),
+      id: `sys_${Date.now()}`,
       text: `[${userName}] поделился контактом: ${username}`,
       sender: 'self',
       type: 'system',
@@ -353,6 +499,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         sendVoice,
         shareTelegram,
         getActiveThread,
+        loadMessages,
+        typingUsers,
       }}
     >
       {children}

@@ -4,6 +4,37 @@
 
 ---
 
+## [0.21.0] — 2026-08-16
+
+### Добавлено
+
+**Этап 21 — REST API для профилей, свайпов, мэтчей и загрузки файлов:**
+
+* **Конфигурация Multer (`backend/src/lib/upload.ts`):**
+  - Сохранение файлов в `backend/uploads/` с именами `timestamp-randomUUID.ext`
+  - Валидация MIME-типов: `image/jpeg`, `image/png`, `image/webp`, `audio/webm`, `audio/mp3`, `audio/ogg`
+  - Ограничение размера файла: 15 МБ
+
+* **Роуты пользователя (`/api/users`):**
+  - `GET /api/users/me` — получение текущего профиля
+  - `PUT /api/users/me` — создание/обновление профиля (name, age, city, gender, targetGender, bio, purpose, interests, hasProfile)
+  - `POST /api/users/me/photos` — загрузка до 10 фотографий (`upload.array`)
+  - `DELETE /api/users/me/photos` — удаление фотографии с диска и из БД
+  - `DELETE /api/users/me` — сброс профиля (`hasProfile = false`)
+
+* **Роуты свайпов (`/api/swipes`):**
+  - `GET /api/swipes/feed` — лента анкет (10–20 за раз), исключая уже лайкнутых/дизлайкнутых, с фильтрами по полу и возрасту
+  - `POST /api/swipes/like` — лайк/дизлайк/суперлайк с автоматической проверкой взаимности и созданием мэтча
+
+* **Роуты мэтчей (`/api/matches`):**
+  - `GET /api/matches/likes` — входящие лайки с данными отправителя и текстом записки
+  - `GET /api/matches` — активные мэтчи с данными собеседника и последним сообщением
+
+* **Подключение роутов к серверу (`backend/src/server.ts`):**
+  - Все защищённые роуты подключены после JWT-middleware
+
+---
+
 ## [0.9.0] — 2026-07-13
 
 ### Добавлено

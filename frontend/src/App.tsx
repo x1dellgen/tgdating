@@ -5,6 +5,7 @@ import { MatchProvider, useMatch } from './context/MatchContext';
 import { ChatProvider, useChat } from './context/ChatContext';
 import { AnonymousChatProvider } from './context/AnonymousChatContext';
 import { useTelegram } from './hooks/useTelegram';
+import { authenticateWithTelegram } from './api/client';
 import { WelcomeScreen } from './features/welcome/WelcomeScreen';
 import { OnboardingScreen } from './features/onboarding/OnboardingScreen';
 import { DatingLayout } from './features/dating/DatingLayout';
@@ -32,17 +33,37 @@ function ScreenRouter() {
   }
 }
 
+/** Инициализатор авторизации — вызывает Telegram auth и загружает данные */
+function AuthInitializer() {
+  const { setCurrentUserId, loadMatches, loadIncomingLikes } = useMatch();
+
+  useEffect(() => {
+    authenticateWithTelegram().then((authResult) => {
+      if (authResult?.user?.id) {
+        setCurrentUserId(authResult.user.id);
+      }
+      // Загружаем мэтчи и входящие лайки после авторизации
+      loadMatches().catch(() => {});
+      loadIncomingLikes().catch(() => {});
+    });
+  }, [setCurrentUserId, loadMatches, loadIncomingLikes]);
+
+  return null;
+}
+
 /** Связывает MatchContext и ChatContext: при каждом мэтче сразу создаёт чат */
 function MatchChatConnector() {
-  const { setOnMatchCallback } = useMatch();
+  const { setOnMatchCallback, matchesList } = useMatch();
   const { openChat } = useChat();
 
   useEffect(() => {
     setOnMatchCallback((profile: MockProfile) => {
-      openChat(profile);
+      // Ищем matchId из matchesList для этого профиля
+      const match = matchesList.find((m) => m.partner.id === profile.id);
+      openChat(profile, match?.id);
     });
     return () => setOnMatchCallback(null);
-  }, [setOnMatchCallback, openChat]);
+  }, [setOnMatchCallback, openChat, matchesList]);
 
   return null;
 }
@@ -104,6 +125,7 @@ export default function App() {
             <MatchProvider>
               <ChatProvider>
                 <AnonymousChatProvider>
+                  <AuthInitializer />
                   <MatchChatConnector />
                   <ScreenRouter />
                   <MatchOverlay />

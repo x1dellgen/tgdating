@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────
+
+enum LikeType {
+  LIKE
+  DISLIKE
+  SUPERLIKE
+}
+
+enum AnonSessionStatus {
+  ACTIVE
+  CLOSED
+}
+
+// ─── User ────────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(uuid())
+  telegramId     BigInt   @unique @map("telegram_id")
+  name           String
+  age            Int?
+  city           String?
+  gender         String?
+  targetGender   String?  @map("target_gender")
+  bio            String?
+  photos         String[]
+  purpose        String?
+  interests      String[]
+  hasProfile     Boolean  @default(false) @map("has_profile")
+  isAnonLinked   Boolean  @default(false) @map("is_anon_linked")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  sentLikes     Like[]           @relation("SentLikes")
+  receivedLikes Like[]           @relation("ReceivedLikes")
+  matches1      Match[]          @relation("MatchUser1")
+  matches2      Match[]          @relation("MatchUser2")
+  sentMessages  Message[]        @relation("SentMessages")
+  anonSessions1   AnonSession[]    @relation("AnonUser1")
+  anonSessions2   AnonSession[]    @relation("AnonUser2")
+  sentAnonMessages AnonMessage[]   @relation("SentAnonMessages")
+
+  @@map("users")
+}
+
+// ─── Like ────────────────────────────────────────────────
+
+model Like {
+  id          String    @id @default(uuid())
+  fromUserId  String    @map("from_user_id")
+  toUserId    String    @map("to_user_id")
+  type        LikeType
+  message     String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  fromUser User @relation("SentLikes", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("ReceivedLikes", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@map("likes")
+}
+
+// ─── Match ───────────────────────────────────────────────
+
+model Match {
+  id        String   @id @default(uuid())
+  user1Id   String   @map("user1_id")
+  user2Id   String   @map("user2_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user1    User      @relation("MatchUser1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2    User      @relation("MatchUser2", fields: [user2Id], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@unique([user1Id, user2Id])
+  @@map("matches")
+}
+
+// ─── Message ─────────────────────────────────────────────
+
+model Message {
+  id          String   @id @default(uuid())
+  matchId     String   @map("match_id")
+  senderId    String   @map("sender_id")
+  text        String?
+  attachments String[]
+  audioUrl    String?  @map("audio_url")
+  duration    Int?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  match  Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  sender User  @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ─── AnonSession ─────────────────────────────────────────
+
+model AnonSession {
+  id        String            @id @default(uuid())
+  user1Id   String            @map("user1_id")
+  user2Id   String            @map("user2_id")
+  topic     String?
+  status    AnonSessionStatus @default(ACTIVE)
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  user1    User          @relation("AnonUser1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2    User          @relation("AnonUser2", fields: [user2Id], references: [id], onDelete: Cascade)
+  messages AnonMessage[]
+
+  @@map("anon_sessions")
+}
+
+// ─── AnonMessage ────────────────────────────────────────
+
+model AnonMessage {
+  id          String   @id @default(uuid())
+  sessionId   String   @map("session_id")
+  senderId    String   @map("sender_id")
+  text        String?
+  attachments String[]
+  audioUrl    String?  @map("audio_url")
+  duration    Int?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  session AnonSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender  User        @relation("SentAnonMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@map("anon_messages")
+}

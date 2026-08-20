@@ -13,6 +13,8 @@ import { useMatch } from './MatchContext';
 import { calculateAge } from '../shared/constants';
 import { mockProfiles, type MockProfile } from '../features/swipes/mockProfiles';
 import type { Gender } from '../shared/constants';
+import { getSocket } from '../api/client';
+import type { Socket } from 'socket.io-client';
 
 /* ─── Типы ─── */
 
@@ -93,7 +95,7 @@ export function saveAnonSettings(settings: AnonSettings): void {
   }
 }
 
-/* ─── Фразы ─── */
+/* ─── Фразы (fallback для оффлайна) ─── */
 
 export const ANON_REPLIES = [
   'Привет! Как настроение?',
@@ -235,12 +237,16 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
   // Просмотр профиля дейтинга из анонимного чата
   const [viewDatingProfile, setViewDatingProfile] = useState<MockProfile | null>(null);
 
+  // ID анонимной сессии на бэкенде
+  const sessionIdRef = useRef<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shareReplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
 
   /* ── Чтение профиля напрямую из localStorage (реактивное) ── */
   function readHasProfile(): boolean {
@@ -329,7 +335,114 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     }
   }, [hasProfile, selfGender, selfAge, anonymousInterests, isAdultMode]);
 
-  /* ── Фильтрация профилей ── */
+  /* ─── Socket.io: подключение и обработчики событий ─── */
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    socketRef.current = socket;
+
+    // Обработчики анонимного чата
+    const onMatchFound = (data: { sessionId: string; partnerInfo: { id: string; name: string; age: number | null; gender: string | null } | null }) => {
+      sessionIdRef.current = data.sessionId;
+
+      // Создаём MockProfile из partnerInfo
+      const partner = data.partnerInfo;
+      const profile: MockProfile = partner
+        ? {
+            id: partner.id,
+            name: partner.name || 'Аноним',
+            age: partner.age ?? 0,
+            city: '',
+            bio: '',
+            photos: [],
+            interests: [],
+            goal: '',
+            isAdult: (partner.age ?? 0) >= 18,
+          }
+        : {
+            id: `anon_${data.sessionId}`,
+            name: 'Аноним',
+            age: 0,
+            city: '',
+            bio: '',
+            photos: [],
+            interests: [],
+            goal: '',
+          };
+
+      setMatchedProfile(profile);
+      setStatus('chatting');
+
+      // Приветственное сообщение
+      const welcomeMsg: AnonMessage = {
+        id: genAnonId(),
+        text: 'Вы подключены к собеседнику. Приятного общения!',
+        sender: 'self',
+        type: 'system',
+        timestamp: Date.now(),
+      };
+      setMessages([welcomeMsg]);
+    };
+
+    const onSearchQueued = (_data: { position: number }) => {
+      // Уже в стейте searching — ничего не меняем
+    };
+
+    const onNewAnonMessage = (data: {
+      id: string;
+      sessionId: string;
+      senderId: string;
+      text: string | null;
+      attachments: string[];
+      audioUrl: string | null;
+      duration: number | null;
+      createdAt: string;
+    }) => {
+      const msg: AnonMessage = {
+        id: data.id,
+        text: data.text || '',
+        sender: 'other',
+        type: data.attachments?.length > 0 ? 'image' : data.audioUrl ? 'voice' : 'text',
+        timestamp: new Date(data.createdAt).getTime(),
+        voiceDuration: data.duration ?? undefined,
+        audioUrl: data.audioUrl ?? undefined,
+      };
+      setMessages((prev) => [...prev, msg]);
+    };
+
+    const onPartnerLeft = () => {
+      const sysMsg: AnonMessage = {
+        id: genAnonId(),
+        text: '[Собеседник покинул чат]',
+        sender: 'self',
+        type: 'system',
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, sysMsg]);
+      setStatus('stopped-chat');
+    };
+
+    const onSearchCancelled = () => {
+      setStatus('setup');
+    };
+
+    socket.on('anon_match_found', onMatchFound);
+    socket.on('anon_search_queued', onSearchQueued);
+    socket.on('new_anon_message', onNewAnonMessage);
+    socket.on('anon_partner_left', onPartnerLeft);
+    socket.on('anon_search_cancelled', onSearchCancelled);
+
+    return () => {
+      socket.off('anon_match_found', onMatchFound);
+      socket.off('anon_search_queued', onSearchQueued);
+      socket.off('new_anon_message', onNewAnonMessage);
+      socket.off('anon_partner_left', onPartnerLeft);
+      socket.off('anon_search_cancelled', onSearchCancelled);
+    };
+  }, []);
+
+  /* ── Фильтрация профилей (fallback для оффлайна) ── */
   const getFilteredProfiles = useCallback((): MockProfile[] => {
     const maleNames = ['Дмитрий', 'Алексей', 'Сергей', 'Максим', 'Артём'];
     const femaleNames = ['Анна', 'Екатерина', 'Мария', 'Ольга', 'Алиса', 'Полина', 'Виктория'];
@@ -339,7 +452,6 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
       if (profileGroup !== userAgeGroup) return false;
       if (searchGender === 'male' && femaleNames.includes(p.name)) return false;
       if (searchGender === 'female' && maleNames.includes(p.name)) return false;
-      // Adult Mode filter: only match profiles with isAdult=true and "Ролевые игры" interest
       if (isAdultMode && userAgeGroup === 'adult') {
         if (!p.isAdult) return false;
         if (!p.interests.includes('Ролевые игры')) return false;
@@ -358,7 +470,7 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     return filtered;
   }, [searchGender, userAgeGroup, anonymousInterests, isAdultMode]);
 
-  /* ── Выбор случайного профиля ── */
+  /* ── Выбор случайного профиля (fallback) ── */
   const pickRandomProfile = useCallback((): MockProfile | null => {
     const filtered = getFilteredProfiles();
     if (filtered.length === 0) return null;
@@ -377,48 +489,75 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     return filtered[Math.floor(Math.random() * filtered.length)];
   }, [getFilteredProfiles, anonymousInterests]);
 
-  /* ── Начать поиск ── */
+  /* ── Начать поиск (Socket.io + fallback) ── */
   const startSearching = useCallback(() => {
     setStatus('searching');
     setMessages([]);
     setMatchedProfile(null);
     setHasSharedProfile(false);
     setReplyToMessage(null);
+    sessionIdRef.current = null;
 
-    const delay = 3000 + Math.random() * 1000;
-    searchTimerRef.current = setTimeout(() => {
-      const profile = pickRandomProfile();
-      if (profile) {
-        setMatchedProfile(profile);
-        setStatus('chatting');
-      } else {
-        setStatus('setup');
-      }
-    }, delay);
-  }, [pickRandomProfile]);
+    const socket = socketRef.current;
 
-  /* ── Остановить поиск (из радара) ── */
+    if (socket?.connected) {
+      // Отправляем запрос на поиск через Socket.io
+      socket.emit('start_anon_search', {
+        targetGender: searchGender,
+        topic: anonymousInterests[0] || 'general',
+      });
+    } else {
+      // Fallback: моковый поиск (оффлайн / dev-режим)
+      const delay = 3000 + Math.random() * 1000;
+      searchTimerRef.current = setTimeout(() => {
+        const profile = pickRandomProfile();
+        if (profile) {
+          setMatchedProfile(profile);
+          setStatus('chatting');
+        } else {
+          setStatus('setup');
+        }
+      }, delay);
+    }
+  }, [searchGender, anonymousInterests, pickRandomProfile]);
+
+  /* ── Остановить поиск ── */
   const stopSearching = useCallback(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    const socket = socketRef.current;
+    if (socket?.connected) {
+      socket.emit('cancel_anon_search');
+    }
+
     setStatus('stopped-search');
   }, []);
 
   /* ── Перезапустить поиск ── */
   const resumeSearching = useCallback(() => {
     setStatus('searching');
-    const delay = 3000 + Math.random() * 1000;
-    searchTimerRef.current = setTimeout(() => {
-      const profile = pickRandomProfile();
-      if (profile) {
-        setMatchedProfile(profile);
-        setStatus('chatting');
-      } else {
-        setStatus('setup');
-      }
-    }, delay);
-  }, [pickRandomProfile]);
 
-  /* ── Отправить текст ── */
+    const socket = socketRef.current;
+    if (socket?.connected) {
+      socket.emit('start_anon_search', {
+        targetGender: searchGender,
+        topic: anonymousInterests[0] || 'general',
+      });
+    } else {
+      const delay = 3000 + Math.random() * 1000;
+      searchTimerRef.current = setTimeout(() => {
+        const profile = pickRandomProfile();
+        if (profile) {
+          setMatchedProfile(profile);
+          setStatus('chatting');
+        } else {
+          setStatus('setup');
+        }
+      }, delay);
+    }
+  }, [searchGender, anonymousInterests, pickRandomProfile]);
+
+  /* ── Отправить текст (Socket.io + fallback) ── */
   const sendMessage = useCallback(() => {
     const text = inputText.trim();
     if (!text || !matchedProfile) return;
@@ -438,28 +577,39 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     setInputText('');
     setReplyToMessage(null);
 
-    replyTimerRef.current = setTimeout(() => {
-      const reply = ANON_REPLIES[Math.floor(Math.random() * ANON_REPLIES.length)];
-      const shouldReplyWithQuote = Math.random() < 0.33;
+    const socket = socketRef.current;
 
-      const botMsg: AnonMessage = {
-        id: genAnonId(),
-        text: reply,
-        sender: 'other',
-        type: 'text',
-        timestamp: Date.now(),
-        ...(shouldReplyWithQuote
-          ? {
-              replyTo: {
-                id: userMsg.id,
-                text: userMsg.text,
-                sender: 'self' as const,
-              },
-            }
-          : {}),
-      };
-      setMessages((prev) => [...prev, botMsg]);
-    }, 1500 + Math.random() * 500);
+    if (socket?.connected && sessionIdRef.current) {
+      // Отправляем через Socket.io
+      socket.emit('send_anon_message', {
+        sessionId: sessionIdRef.current,
+        text,
+      });
+    } else {
+      // Fallback: эмуляция ответа
+      replyTimerRef.current = setTimeout(() => {
+        const reply = ANON_REPLIES[Math.floor(Math.random() * ANON_REPLIES.length)];
+        const shouldReplyWithQuote = Math.random() < 0.33;
+
+        const botMsg: AnonMessage = {
+          id: genAnonId(),
+          text: reply,
+          sender: 'other',
+          type: 'text',
+          timestamp: Date.now(),
+          ...(shouldReplyWithQuote
+            ? {
+                replyTo: {
+                  id: userMsg.id,
+                  text: userMsg.text,
+                  sender: 'self' as const,
+                },
+              }
+            : {}),
+        };
+        setMessages((prev) => [...prev, botMsg]);
+      }, 1500 + Math.random() * 500);
+    }
   }, [inputText, matchedProfile, replyToMessage]);
 
   /* ── Следующий собеседник ── */
@@ -467,29 +617,50 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     if (replyTimerRef.current) clearTimeout(replyTimerRef.current);
     if (shareReplyTimerRef.current) clearTimeout(shareReplyTimerRef.current);
 
+    // Покидаем текущую сессию
+    const socket = socketRef.current;
+    if (socket?.connected && sessionIdRef.current) {
+      socket.emit('leave_anon_chat', { sessionId: sessionIdRef.current });
+    }
+
     setMessages([]);
     setMatchedProfile(null);
     setHasSharedProfile(false);
     setReplyToMessage(null);
+    sessionIdRef.current = null;
     setStatus('searching');
 
-    const delay = 3000 + Math.random() * 1000;
-    searchTimerRef.current = setTimeout(() => {
-      const profile = pickRandomProfile();
-      if (profile) {
-        setMatchedProfile(profile);
-        setStatus('chatting');
-      } else {
-        setStatus('setup');
-      }
-    }, delay);
-  }, [pickRandomProfile]);
+    // Запускаем новый поиск
+    if (socket?.connected) {
+      socket.emit('start_anon_search', {
+        targetGender: searchGender,
+        topic: anonymousInterests[0] || 'general',
+      });
+    } else {
+      const delay = 3000 + Math.random() * 1000;
+      searchTimerRef.current = setTimeout(() => {
+        const profile = pickRandomProfile();
+        if (profile) {
+          setMatchedProfile(profile);
+          setStatus('chatting');
+        } else {
+          setStatus('setup');
+        }
+      }, delay);
+    }
+  }, [searchGender, anonymousInterests, pickRandomProfile]);
 
   /* ── Завершить диалог ── */
   const endChat = useCallback(() => {
     if (replyTimerRef.current) clearTimeout(replyTimerRef.current);
     if (shareReplyTimerRef.current) clearTimeout(shareReplyTimerRef.current);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    // Уведомляем бэкенд
+    const socket = socketRef.current;
+    if (socket?.connected && sessionIdRef.current) {
+      socket.emit('leave_anon_chat', { sessionId: sessionIdRef.current });
+    }
 
     const endMsg: AnonMessage = {
       id: genAnonId(),
@@ -511,7 +682,6 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Авто-лайк при шеринге: регистрируем лайк к боту в MatchContext
     addLike(matchedProfile.id);
 
     const shareMsg: AnonMessage = {
@@ -548,7 +718,6 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
   /* ── Быстрое создание анкеты + авто-отправка в чат ── */
   const shareProfileAndAutoSend = useCallback(
     (profileData: { name: string; gender: string; age: string; photo: string }) => {
-      // Create the profile in localStorage
       const profile = {
         name: profileData.name,
         gender: profileData.gender,
@@ -567,12 +736,11 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
       };
       try {
         localStorage.setItem('dateme_user_profile', JSON.stringify(profile));
-        setHasProfile(true); // same-tab activation: storage event won't fire
+        setHasProfile(true);
       } catch {
         // silently ignore
       }
 
-      // Auto-send profile card in chat if chatting
       if (matchedProfile && (status === 'chatting' || status === 'stopped-chat')) {
         addLike(matchedProfile.id);
 
@@ -650,7 +818,7 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     [matchedProfile],
   );
 
-  /* ── Отправить голосовое ── */
+  /* ── Отправить голосовое (Socket.io + fallback) ── */
   const sendVoice = useCallback(
     (duration: number, audioUrl: string) => {
       if (!matchedProfile) return;
@@ -666,18 +834,28 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
       };
       setMessages((prev) => [...prev, voiceMsg]);
 
-      // Эмуляция ответа
-      replyTimerRef.current = setTimeout(() => {
-        const reply = ANON_REPLIES[Math.floor(Math.random() * ANON_REPLIES.length)];
-        const botMsg: AnonMessage = {
-          id: genAnonId(),
-          text: reply,
-          sender: 'other',
-          type: 'text',
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, botMsg]);
-      }, 2000 + Math.random() * 1000);
+      const socket = socketRef.current;
+
+      if (socket?.connected && sessionIdRef.current) {
+        socket.emit('send_anon_message', {
+          sessionId: sessionIdRef.current,
+          audioUrl,
+          duration,
+        });
+      } else {
+        // Fallback
+        replyTimerRef.current = setTimeout(() => {
+          const reply = ANON_REPLIES[Math.floor(Math.random() * ANON_REPLIES.length)];
+          const botMsg: AnonMessage = {
+            id: genAnonId(),
+            text: reply,
+            sender: 'other',
+            type: 'text',
+            timestamp: Date.now(),
+          };
+          setMessages((prev) => [...prev, botMsg]);
+        }, 2000 + Math.random() * 1000);
+      }
     },
     [matchedProfile],
   );
@@ -687,13 +865,12 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
     alert('Жалоба отправлена');
   }, []);
 
-  /* ── Отправка изображения ── */
+  /* ── Отправка изображения (Socket.io + fallback) ── */
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file || !matchedProfile) return;
 
-      // Валидация типа и размера (15 МБ)
       if (!file.type.startsWith('image/') || file.size > 15 * 1024 * 1024) {
         e.target.value = '';
         return;
@@ -716,27 +893,37 @@ export function AnonymousChatProvider({ children }: { children: ReactNode }) {
         setMessages((prev) => [...prev, imgMsg]);
         setReplyToMessage(null);
 
-        replyTimerRef.current = setTimeout(() => {
-          const reply = PHOTO_REPLIES[Math.floor(Math.random() * PHOTO_REPLIES.length)];
-          const shouldReplyWithQuote = Math.random() < 0.33;
-          const botMsg: AnonMessage = {
-            id: genAnonId(),
-            text: reply,
-            sender: 'other',
-            type: 'text',
-            timestamp: Date.now(),
-            ...(shouldReplyWithQuote
-              ? {
-                  replyTo: {
-                    id: imgMsg.id,
-                    text: '',
-                    sender: 'self' as const,
-                  },
-                }
-              : {}),
-          };
-          setMessages((prev) => [...prev, botMsg]);
-        }, 2000);
+        // В Socket.io-режиме отправляем как attachment
+        const socket = socketRef.current;
+        if (socket?.connected && sessionIdRef.current) {
+          socket.emit('send_anon_message', {
+            sessionId: sessionIdRef.current,
+            attachments: [base64],
+          });
+        } else {
+          // Fallback
+          replyTimerRef.current = setTimeout(() => {
+            const reply = PHOTO_REPLIES[Math.floor(Math.random() * PHOTO_REPLIES.length)];
+            const shouldReplyWithQuote = Math.random() < 0.33;
+            const botMsg: AnonMessage = {
+              id: genAnonId(),
+              text: reply,
+              sender: 'other',
+              type: 'text',
+              timestamp: Date.now(),
+              ...(shouldReplyWithQuote
+                ? {
+                    replyTo: {
+                      id: imgMsg.id,
+                      text: '',
+                      sender: 'self' as const,
+                    },
+                  }
+                : {}),
+            };
+            setMessages((prev) => [...prev, botMsg]);
+          }, 2000);
+        }
       };
       reader.readAsDataURL(file);
 

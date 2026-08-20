@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useRegistration, type OnboardingStep } from '../../context/RegistrationContext';
 import { useScreen } from '../../context/ScreenContext';
 import { calculateAge } from '../../shared/constants';
@@ -15,13 +15,20 @@ export function StepFinal() {
   const { navigateTo, redirectSource, setRedirectSource } = useScreen();
   const [showRedirectModal, setShowRedirectModal] = useState(true);
 
-  const handleGoToSwipes = () => {
+  const { saveProfile } = useRegistration();
+  const [saving, setSaving] = useState(false);
+
+  const handleGoToSwipes = useCallback(async () => {
     if (redirectSource === 'anon') {
       setShowRedirectModal(true);
-    } else {
-      navigateTo('dating');
+      return;
     }
-  };
+    // Сохраняем профиль на сервер перед переходом
+    setSaving(true);
+    await saveProfile();
+    setSaving(false);
+    navigateTo('dating');
+  }, [redirectSource, saveProfile, navigateTo]);
 
   const handleReturnToAnon = () => {
     setRedirectSource(null);
@@ -116,9 +123,10 @@ export function StepFinal() {
       <button
         type="button"
         onClick={handleGoToSwipes}
-        className="w-full py-3.5 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 text-white font-semibold text-base hover:from-pink-600 hover:to-rose-600 transition-all active:scale-[0.98]"
+        disabled={saving}
+        className="w-full py-3.5 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 text-white font-semibold text-base hover:from-pink-600 hover:to-rose-600 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        Перейти к анкетам
+        {saving ? 'Сохранение...' : 'Перейти к анкетам'}
       </button>
 
       {/* Модалка выбора направления после создания анкеты из анонимки */}

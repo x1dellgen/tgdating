@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@twa-dev/sdk": "^8.0.2",
+    "axios": "^1.19.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useScreen } from '../../context/ScreenContext';
 import { useRegistration } from '../../context/RegistrationContext';
 import { useMatch } from '../../context/MatchContext';
@@ -431,7 +431,10 @@ function NoMoreProfiles() {
 export function SwipesScreen() {
   const { navigateTo } = useScreen();
   const { form } = useRegistration();
-  const { triggerMatch, matchedProfileIds, blockedUserIds, blockAndReportUser } = useMatch();
+  const {
+    triggerMatch, matchedProfileIds, blockedUserIds, blockAndReportUser,
+    feedProfiles, loadFeed, sendReaction,
+  } = useMatch();
   const [index, setIndex] = useState(0);
   const [photoIndex, setPhotoIndex] = useState(0);
   const [showDetails, setShowDetails] = useState(false);
@@ -440,15 +443,23 @@ export function SwipesScreen() {
   const [showSuperlikeModal, setShowSuperlikeModal] = useState(false);
   const [showAnonConfirm, setShowAnonConfirm] = useState(false);
 
+  // Загружаем ленту из API при монтировании
+  useEffect(() => {
+    loadFeed();
+  }, [loadFeed]);
+
   // Вычисляем возраст текущего пользователя
   const userAge = useMemo(() => {
     if (!form.birthDate) return null;
     return calculateAge(form.birthDate);
   }, [form.birthDate]);
 
+  // Используем API-ленту, если есть; иначе fallback на моки
+  const sourceProfiles = feedProfiles.length > 0 ? feedProfiles : mockProfiles;
+
   // Фильтруем анкеты по возрастному цензу, исключаем мэтчи и заблокированных
   const filteredProfiles = useMemo(() => {
-    let result = mockProfiles;
+    let result = sourceProfiles;
     if (userAge !== null) {
       if (userAge >= 14 && userAge <= 17) {
         result = result.filter((p) => p.age >= 14 && p.age <= 17);
@@ -465,7 +476,7 @@ export function SwipesScreen() {
       result = result.filter((p) => !blockedUserIds.has(p.id));
     }
     return result;
-  }, [userAge, matchedProfileIds, blockedUserIds]);
+  }, [sourceProfiles, userAge, matchedProfileIds, blockedUserIds]);
 
   const currentProfile: MockProfile | undefined = filteredProfiles[index];
   const isFinished = index >= filteredProfiles.length;
@@ -480,22 +491,16 @@ export function SwipesScreen() {
     setIndex((prev) => Math.max(prev - 1, 0));
   }, []);
 
-  /** 30% шанс мэтча при лайке/суперлайке */
-  const maybeTriggerMatch = useCallback(
-    (profile: MockProfile) => {
-      const roll = Math.random();
-      if (roll < 0.3) {
-        triggerMatch(profile);
-      }
-    },
-    [triggerMatch],
-  );
-
   const handleLike = useCallback(() => {
     if (!currentProfile) return;
-    maybeTriggerMatch(currentProfile);
+    // Отправляем реакцию на API
+    sendReaction(currentProfile.id, 'LIKE').then((isMatch) => {
+      if (isMatch) {
+        triggerMatch(currentProfile);
+      }
+    });
     advance();
-  }, [currentProfile, maybeTriggerMatch, advance]);
+  }, [currentProfile, sendReaction, triggerMatch, advance]);
 
   const handleSuperLike = useCallback(() => {
     if (!currentProfile) return;
@@ -503,18 +508,26 @@ export function SwipesScreen() {
   }, [currentProfile]);
 
   const handleSuperLikeSend = useCallback(
-    (_message: string) => {
+    (message: string) => {
       if (!currentProfile) return;
       setShowSuperlikeModal(false);
-      maybeTriggerMatch(currentProfile);
+      // Отправляем суперлайк на API
+      sendReaction(currentProfile.id, 'SUPERLIKE', message).then((isMatch) => {
+        if (isMatch) {
+          triggerMatch(currentProfile);
+        }
+      });
       advance();
     },
-    [currentProfile, maybeTriggerMatch, advance],
+    [currentProfile, sendReaction, triggerMatch, advance],
   );
 
   const handleDislike = useCallback(() => {
+    if (!currentProfile) return;
+    // Отправляем дизлайк на API
+    sendReaction(currentProfile.id, 'DISLIKE');
     advance();
-  }, [advance]);
+  }, [currentProfile, sendReaction, advance]);
 
   const goPrevPhoto = () => {
     if (!currentProfile) return;
