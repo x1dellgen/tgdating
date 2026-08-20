@@ -10,7 +10,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL обязателен"),
   DIRECT_URL: z.string().optional(),
   BOT_TOKEN: z.string().min(1, "BOT_TOKEN обязателен"),
-  JWT_SECRET: z.string().min(10, "JWT_SECRET должен быть не менее 10 символов"),
+  JWT_SECRET: z.string().min(32, "JWT_SECRET должен быть не менее 32 символов"),
   NODE_ENV: z
     .enum(["development", "production", "test"])
     .default("development"),

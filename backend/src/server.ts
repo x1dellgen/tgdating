@@ -3,6 +3,7 @@ import "dotenv/config";
 import { createServer } from "node:http";
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import swaggerUi from "swagger-ui-express";
@@ -32,7 +33,7 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 // Раздача статики (загруженные фото и т.д.)
 app.use("/uploads", express.static(path.resolve(__dirname, "..", "uploads")));
@@ -55,6 +56,35 @@ app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customCss: ".swagger-ui .topbar { display: none }",
   customSiteTitle: "Vibe Dating API — Docs",
 }));
+
+// ─── Rate Limiting ────────────────────────────────────────
+
+/** Общий лимит для API: 100 запросов в минуту на IP */
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Слишком много запросов, попробуйте позже" },
+});
+
+/** Строгий лимит для авторизации: 10 запросов в минуту на IP */
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Слишком много попыток авторизации, попробуйте позже" },
+});
+
+/** Лимит для лайков: 60 запросов в минуту на IP */
+const swipeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Слишком много запросов, попробуйте позже" },
+});
 
 // ─── Публичные роуты ─────────────────────────────────────
 
@@ -157,13 +187,13 @@ app.get("/api/health", (_req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post("/api/auth/telegram", authFromInitData);
+app.post("/api/auth/telegram", authLimiter, authFromInitData);
 
 // ─── Защищённые роуты ─────────────────────────────────────
 
-app.use("/api/users", authMiddleware, usersRouter);
-app.use("/api/swipes", authMiddleware, swipesRouter);
-app.use("/api/matches", authMiddleware, matchesRouter);
+app.use("/api/users", apiLimiter, authMiddleware, usersRouter);
+app.use("/api/swipes", swipeLimiter, authMiddleware, swipesRouter);
+app.use("/api/matches", apiLimiter, authMiddleware, matchesRouter);
 
 // ─── 404 handler ─────────────────────────────────────────
 
