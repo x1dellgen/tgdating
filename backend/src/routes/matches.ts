@@ -1,11 +1,73 @@
 import { Router } from "express";
 import prisma from "../lib/prisma.js";
+import { validate } from "../middleware/validate.middleware.js";
+import { matchMessagesSchema } from "../schemas/match.schema.js";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
 
 const router = Router();
 
 // ─── GET /api/matches/likes — входящие лайки ──────────────
 
+/**
+ * @openapi
+ * /api/matches/likes:
+ *   get:
+ *     tags:
+ *       - Matches
+ *     summary: Входящие лайки
+ *     description: Возвращает список входящих лайков и суперлайков от других пользователей.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Список входящих лайков
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 likes:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         format: uuid
+ *                       type:
+ *                         type: string
+ *                         enum: [LIKE, SUPERLIKE]
+ *                       message:
+ *                         type: string
+ *                         nullable: true
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       user:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             format: uuid
+ *                           name:
+ *                             type: string
+ *                           age:
+ *                             type: integer
+ *                           city:
+ *                             type: string
+ *                           photos:
+ *                             type: array
+ *                             items:
+ *                               type: string
+ *                           bio:
+ *                             type: string
+ *       401:
+ *         description: Не авторизован
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get("/likes", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.userId!;
@@ -54,6 +116,84 @@ router.get("/likes", async (req: AuthenticatedRequest, res) => {
 
 // ─── GET /api/matches — активные мэтчи ────────────────────
 
+/**
+ * @openapi
+ * /api/matches:
+ *   get:
+ *     tags:
+ *       - Matches
+ *     summary: Список активных мэтчей
+ *     description: >
+ *       Возвращает все мэтчи текущего пользователя с данными партнёра
+ *       и последним сообщением (если есть).
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Список мэтчей
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 matches:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         format: uuid
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       partner:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             format: uuid
+ *                           name:
+ *                             type: string
+ *                           age:
+ *                             type: integer
+ *                           city:
+ *                             type: string
+ *                           photos:
+ *                             type: array
+ *                             items:
+ *                               type: string
+ *                           bio:
+ *                             type: string
+ *                       lastMessage:
+ *                         type: object
+ *                         nullable: true
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             format: uuid
+ *                           text:
+ *                             type: string
+ *                           senderId:
+ *                             type: string
+ *                             format: uuid
+ *                           audioUrl:
+ *                             type: string
+ *                             nullable: true
+ *                           attachments:
+ *                             type: array
+ *                             items:
+ *                               type: string
+ *                           createdAt:
+ *                             type: string
+ *                             format: date-time
+ *       401:
+ *         description: Не авторизован
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get("/", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.userId!;
@@ -136,64 +276,70 @@ router.get("/", async (req: AuthenticatedRequest, res) => {
 
 // ─── GET /api/matches/:matchId/messages — история сообщений ──
 
-router.get("/:matchId/messages", async (req: AuthenticatedRequest, res) => {
-  try {
-    const userId = req.userId!;
-    const matchId = String(req.params.matchId);
-    const limit = Math.min(parseInt(String(req.query.limit ?? "50")), 100);
-    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+router.get(
+  "/:matchId/messages",
+  validate(matchMessagesSchema),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = req.userId!;
+      const matchId = String(req.params.matchId);
+      const { limit, cursor } = req.query as unknown as {
+        limit: number;
+        cursor?: string;
+      };
 
-    // Проверяем, что пользователь — участник мэтча
-    const match = await prisma.match.findFirst({
-      where: {
-        id: matchId,
-        OR: [{ user1Id: userId }, { user2Id: userId }],
-      },
-    });
-
-    if (!match) {
-      res.status(404).json({ error: "Мэтч не найден" });
-      return;
-    }
-
-    // Загружаем сообщения с пагинацией (cursor-based)
-    const messages = await prisma.message.findMany({
-      where: {
-        matchId,
-        ...(cursor ? { createdAt: { lt: new Date(cursor) } } : {}),
-      },
-      include: {
-        sender: {
-          select: { id: true, name: true, photos: true },
+      // Проверяем, что пользователь — участник мэтча
+      const match = await prisma.match.findFirst({
+        where: {
+          id: matchId,
+          OR: [{ user1Id: userId }, { user2Id: userId }],
         },
-      },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
+      });
 
-    const result = messages.map((msg: (typeof messages)[number]) => ({
-      id: msg.id,
-      matchId: msg.matchId,
-      senderId: msg.senderId,
-      senderName: msg.sender.name,
-      text: msg.text,
-      attachments: msg.attachments,
-      audioUrl: msg.audioUrl,
-      duration: msg.duration,
-      createdAt: msg.createdAt.toISOString(),
-    }));
+      if (!match) {
+        res.status(404).json({ error: "Мэтч не найден" });
+        return;
+      }
 
-    res.json({
-      messages: result,
-      nextCursor:
-        messages.length === limit
-          ? messages[messages.length - 1]!.createdAt.toISOString()
-          : null,
-    });
-  } catch (error) {
-    console.error("[matches] GET /:matchId/messages error:", error);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+      // Загружаем сообщения с пагинацией (cursor-based)
+      const messages = await prisma.message.findMany({
+        where: {
+          matchId,
+          ...(cursor ? { createdAt: { lt: new Date(cursor) } } : {}),
+        },
+        include: {
+          sender: {
+            select: { id: true, name: true, photos: true },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      });
+
+      const result = messages.map((msg) => ({
+        id: msg.id,
+        matchId: msg.matchId,
+        senderId: msg.senderId,
+        senderName: msg.sender.name,
+        text: msg.text,
+        attachments: msg.attachments,
+        audioUrl: msg.audioUrl,
+        duration: msg.duration,
+        createdAt: msg.createdAt.toISOString(),
+      }));
+
+      res.json({
+        messages: result,
+        nextCursor:
+          messages.length === limit
+            ? messages[messages.length - 1]!.createdAt.toISOString()
+            : null,
+      });
+    } catch (error) {
+      console.error("[matches] GET /:matchId/messages error:", error);
+      res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    }
   }
-});
+);
 
 export default router;

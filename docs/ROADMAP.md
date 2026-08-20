@@ -86,16 +86,12 @@
 - [x] Docker Compose для локальной PostgreSQL
 - [x] Health check: GET /api/health
 
-## In Progress
+### Этап 11 — Production-ready Setup ✅
 
-- Интеграция фронтенда с REST API (переход с mock-данных на реальные)
-
-## Planned
-
-- [ ] Анимации и микровзаимодействия
-- [ ] Push-уведомления через Telegram Bot API
-- [ ] Голосовые сообщения
-- [ ] Тестирование на разных устройствах
-- [ ] CI/CD pipeline
-- [ ] Подготовка к публикации в Telegram
+- [x] Docker и Docker Compose (frontend + backend + nginx)
+- [x] Swagger/OpenAPI документация API
+- [x] CI/CD pipeline (GitHub Actions)
+- [x] Zod валидация входных данных
+- [x] Vitest тестирование
+- [x] Интеграция фронтенда с REST API
 

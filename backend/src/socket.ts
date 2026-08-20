@@ -2,10 +2,11 @@ import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import prisma from "./lib/prisma.js";
+import { env } from "./config/env.js";
 
 // ─── Конфиг ──────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "";
+const JWT_SECRET = env.JWT_SECRET;
 
 // ─── Типы ────────────────────────────────────────────────
 

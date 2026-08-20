@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import prisma from "../lib/prisma.js";
+import { env } from "../config/env.js";
 
 // ─── Типы ────────────────────────────────────────────────
 
@@ -19,8 +20,8 @@ interface TelegramUser {
 
 // ─── Конфиг ──────────────────────────────────────────────
 
-const BOT_TOKEN = process.env.BOT_TOKEN ?? "";
-const JWT_SECRET = process.env.JWT_SECRET ?? "";
+const BOT_TOKEN = env.BOT_TOKEN;
+const JWT_SECRET = env.JWT_SECRET;
 const JWT_EXPIRES_IN = "30d";
 
 // ─── Валидация Telegram initData (HMAC-SHA256) ───────────

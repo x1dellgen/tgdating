@@ -1,9 +1,13 @@
+import "./config/env.js"; // Fail-fast: падает при невалидных env
 import "dotenv/config";
 import { createServer } from "node:http";
 import express from "express";
 import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import swaggerUi from "swagger-ui-express";
+import { env } from "./config/env.js";
+import { swaggerSpec } from "./config/swagger.js";
 import { authMiddleware, authFromInitData } from "./middleware/auth.middleware.js";
 import usersRouter from "./routes/users.js";
 import swipesRouter from "./routes/swipes.js";
@@ -12,7 +16,7 @@ import { initSocket } from "./socket.js";
 
 // ─── Конфиг ──────────────────────────────────────────────
 
-const PORT = parseInt(process.env.PORT ?? "5000", 10);
+const PORT = env.PORT;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── Express приложение ──────────────────────────────────
@@ -33,9 +37,55 @@ app.use(express.json());
 // Раздача статики (загруженные фото и т.д.)
 app.use("/uploads", express.static(path.resolve(__dirname, "..", "uploads")));
 
+// ─── Swagger / OpenAPI документация ────────────────────────
+
+/**
+ * @openapi
+ * /api/docs:
+ *   get:
+ *     tags:
+ *       - Docs
+ *     summary: Интерактивная документация API
+ *     description: Swagger UI для тестирования всех эндпоинтов.
+ *     responses:
+ *       200:
+ *         description: HTML-страница Swagger UI
+ */
+app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: ".swagger-ui .topbar { display: none }",
+  customSiteTitle: "Vibe Dating API — Docs",
+}));
+
 // ─── Публичные роуты ─────────────────────────────────────
 
-// Проверка здоровья сервера
+/**
+ * @openapi
+ * /api/health:
+ *   get:
+ *     tags:
+ *       - System
+ *     summary: Проверка здоровья сервера
+ *     description: Возвращает текущий статус сервера, timestamp и uptime.
+ *     responses:
+ *       200:
+ *         description: Сервер работает
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                   example: "2025-01-15T12:00:00.000Z"
+ *                 uptime:
+ *                   type: number
+ *                   description: Время работы в секундах
+ *                   example: 3600.5
+ */
 app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
@@ -44,7 +94,69 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// Авторизация через Telegram initData
+/**
+ * @openapi
+ * /api/auth/telegram:
+ *   post:
+ *     tags:
+ *       - Auth
+ *     summary: Авторизация через Telegram initData
+ *     description: >
+ *       Принимает initData из Telegram Mini App, валидирует подпись (HMAC-SHA256),
+ *       создаёт или находит пользователя и возвращает JWT-токен.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - initData
+ *             properties:
+ *               initData:
+ *                 type: string
+ *                 description: Строка initData из Telegram WebApp
+ *                 example: "user=%7B%22id%22%3A123456%2C%22first_name%22%3A%22John%22%7D&auth_date=1700000000&hash=abc123"
+ *     responses:
+ *       200:
+ *         description: Успешная авторизация
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                   description: JWT-токен (срок 30 дней)
+ *                   example: "eyJhbGciOiJIUzI1NiIs..."
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     telegramId:
+ *                       type: string
+ *                       example: "123456"
+ *                     name:
+ *                       type: string
+ *                       example: "John"
+ *                     hasProfile:
+ *                       type: boolean
+ *                       example: false
+ *       400:
+ *         description: initData не передан
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Невалидная подпись Telegram
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/api/auth/telegram", authFromInitData);
 
 // ─── Защищённые роуты ─────────────────────────────────────
