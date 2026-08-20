@@ -10,6 +10,11 @@ jobs:
   backend-ci:
     name: Backend CI
     runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      JWT_SECRET: "test-jwt-secret-key-at-least-32-chars-long"
+      DATABASE_URL: "file:./test.db"
+      TELEGRAM_BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
     defaults:
       run:
         working-directory: backend
@@ -35,11 +40,6 @@ jobs:
 
       - name: Run tests
         run: npm run test
-        env:
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/tmadating_test?schema=public"
-          BOT_TOKEN: "test-bot-token"
-          JWT_SECRET: "test-jwt-secret"
-          NODE_ENV: test
 
   frontend-ci:
     name: Frontend CI
