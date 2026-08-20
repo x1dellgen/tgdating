@@ -1,5 +1,7 @@
 # Vibe Dating — Telegram Dating Mini App
 
+[![CI](https://github.com/x1dellgen/tgdating/actions/workflows/ci.yml/badge.svg)](https://github.com/x1dellgen/tgdating/actions)
+
 Платформа знакомств и анонимного чата, встроенная в Telegram как Mini App. Пользователи создают анкету, свайпают профили, общаются в матчах и находят случайных собеседников в анонимном чате.
 
 > Pet-проект, разработанный с использованием AI-assisted development (Cursor, Claude, ChatGPT).

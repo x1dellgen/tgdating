@@ -67,6 +67,7 @@ model Like {
   toUser   User @relation("ReceivedLikes", fields: [toUserId], references: [id], onDelete: Cascade)
 
   @@unique([fromUserId, toUserId])
+  @@index([toUserId])
   @@map("likes")
 }
 
@@ -83,6 +84,8 @@ model Match {
   messages Message[]
 
   @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
   @@map("matches")
 }
 
@@ -101,6 +104,8 @@ model Message {
   match  Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
   sender User  @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
+  @@index([matchId])
+  @@index([createdAt])
   @@map("messages")
 }
 
@@ -136,5 +141,7 @@ model AnonMessage {
   session AnonSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   sender  User        @relation("SentAnonMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
+  @@index([sessionId])
+  @@index([createdAt])
   @@map("anon_messages")
 }
