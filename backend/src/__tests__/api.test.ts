@@ -10,7 +10,7 @@ vi.mock("../config/env.js", () => ({
     PORT: 5000,
     DATABASE_URL: "postgresql://localhost:5432/test",
     BOT_TOKEN: "123456:ABC-DEF123456",
-    JWT_SECRET: "test-jwt-secret-key-at-least-10",
+    JWT_SECRET: "test-jwt-secret-key-at-least-32-chars-long",
     NODE_ENV: "test",
   },
 }));
@@ -64,7 +64,7 @@ import app from "../server.js";
 
 // ─── Утилиты ────────────────────────────────────────────
 
-const JWT_SECRET = "test-jwt-secret-key-at-least-10";
+const JWT_SECRET = "test-jwt-secret-key-at-least-32-chars-long";
 
 function generateToken(
   userId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",

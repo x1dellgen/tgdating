@@ -12,7 +12,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL обязателен"),
   DIRECT_URL: z.string().optional(),
   BOT_TOKEN: z.string().min(1, "BOT_TOKEN обязателен"),
-  JWT_SECRET: z.string().min(10, "JWT_SECRET должен быть не менее 10 символов"),
+  JWT_SECRET: z.string().min(32, "JWT_SECRET должен быть не менее 32 символов"),
   NODE_ENV: z
     .enum(["development", "production", "test"])
     .default("development"),
@@ -24,7 +24,7 @@ describe("env schema validation", () => {
   const validEnv = {
     DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
     BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
-    JWT_SECRET: "super-secret-jwt-key-minimum-10-chars",
+    JWT_SECRET: "super-secret-jwt-key-minimum-32-chars-long-ok",
   };
 
   it("accepts valid environment variables", () => {
@@ -54,7 +54,7 @@ describe("env schema validation", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects short JWT_SECRET (< 10 characters)", () => {
+  it("rejects short JWT_SECRET (< 32 characters)", () => {
     const result = envSchema.safeParse({ ...validEnv, JWT_SECRET: "short" });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -63,7 +63,7 @@ describe("env schema validation", () => {
       );
       expect(issue).toBeDefined();
       expect(issue?.message).toBe(
-        "JWT_SECRET должен быть не менее 10 символов"
+        "JWT_SECRET должен быть не менее 32 символов"
       );
     }
   });
