@@ -20,7 +20,7 @@ interface TelegramUser {
 // ─── Конфиг ──────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.BOT_TOKEN ?? "";
-const JWT_SECRET = process.env.JWT_SECRET ?? "super-secret-key";
+const JWT_SECRET = process.env.JWT_SECRET ?? "";
 const JWT_EXPIRES_IN = "30d";
 
 // ─── Валидация Telegram initData (HMAC-SHA256) ───────────

@@ -5,7 +5,7 @@ import prisma from "./lib/prisma.js";
 
 // ─── Конфиг ──────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "super-secret-key";
+const JWT_SECRET = process.env.JWT_SECRET ?? "";
 
 // ─── Типы ────────────────────────────────────────────────
 
