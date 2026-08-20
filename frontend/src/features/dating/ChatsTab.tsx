@@ -87,14 +87,14 @@ function VoiceMessage({ duration, isSelf, audioUrl }: { duration: number; isSelf
         }
       });
     }
+    const intervalId = intervalRef.current;
     return () => {
       const audio = audioRef.current;
       if (audio) {
         audio.pause();
         audioRef.current = null;
       }
-      const interval = intervalRef.current;
-      if (interval) clearInterval(interval);
+      if (intervalId) clearInterval(intervalId);
     };
   }, [audioUrl]);
 

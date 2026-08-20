@@ -433,9 +433,11 @@ export function AnonymousChatScreen() {
   // Очистка при размонтировании
   useEffect(() => {
     return () => {
-      if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      const intervalId = recordingIntervalRef.current;
+      if (intervalId) clearInterval(intervalId);
+      const stream = audioStreamRef.current;
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
       }
     };
   }, []);
@@ -496,7 +498,7 @@ export function AnonymousChatScreen() {
     }
   };
 
-  const stopRecordingAndSend = () => {
+  const stopRecordingAndSend = useCallback(() => {
     if (recordingIntervalRef.current) {
       clearInterval(recordingIntervalRef.current);
       recordingIntervalRef.current = null;
@@ -505,7 +507,7 @@ export function AnonymousChatScreen() {
       mediaRecorderRef.current.stop();
     }
     setIsRecording(false);
-  };
+  }, []);
 
   const cancelRecording = () => {
     if (recordingIntervalRef.current) {
