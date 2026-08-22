@@ -1,12 +1,34 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
+import { type ZodSchema, ZodError } from "zod";
 import prisma from "./lib/prisma.js";
 import { env } from "./config/env.js";
+import {
+  SocketRateLimiter,
+  SEND_MESSAGE_LIMIT,
+  SEND_ANON_MESSAGE_LIMIT,
+  START_ANON_SEARCH_LIMIT,
+} from "./lib/socket-rate-limiter.js";
+import {
+  sendMessageSchema,
+  sendAnonMessageSchema,
+  joinChatSchema,
+  startAnonSearchSchema,
+  leaveAnonChatSchema,
+  typingSchema,
+} from "./schemas/socket.schema.js";
 
 // ─── Конфиг ──────────────────────────────────────────────
 
 const JWT_SECRET = env.JWT_SECRET;
+
+/** Максимальный размер HTTP-буфера: 5 МБ (защита от oversized payloads) */
+const MAX_HTTP_BUFFER_SIZE = 5 * 1024 * 1024;
+
+/** Ping/Pong таймауты (мс) */
+const PING_TIMEOUT = 20_000;
+const PING_INTERVAL = 25_000;
 
 // ─── Типы ────────────────────────────────────────────────
 
@@ -32,8 +54,50 @@ declare module "socket.io" {
 
 // ─── Онлайн-пользователи ─────────────────────────────────
 
-/** Map<userId, socketId> — реестр подключённых пользователей */
-const onlineUsers = new Map<string, string>();
+/** Map<userId, Set<socketId>> — реестр подключённых пользователей (поддержка мульти-подключений) */
+const onlineUsers = new Map<string, Set<string>>();
+
+// ─── Rate Limiter ─────────────────────────────────────────
+
+const rateLimiter = new SocketRateLimiter();
+
+// Периодическая очистка устаревших записей (каждые 5 минут)
+const CLEANUP_INTERVAL = 5 * 60 * 1000;
+const cleanupTimer = setInterval(() => rateLimiter.cleanup(), CLEANUP_INTERVAL);
+// Не блокируем завершение процесса
+if (cleanupTimer.unref) cleanupTimer.unref();
+
+// ─── Утилита валидации ────────────────────────────────────
+
+/**
+ * Безопасно валидирует данные через Zod-схему.
+ * Возвращает распарсенные данные или null (ошибка уже отправлена клиенту).
+ */
+function validateSocketData<T>(
+  schema: ZodSchema<T>,
+  data: unknown,
+  socket: { emit: (event: string, payload: unknown) => void }
+): T | null {
+  try {
+    return schema.parse(data);
+  } catch (error) {
+    if (error instanceof ZodError) {
+      const details = error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      }));
+      socket.emit("error_message", {
+        error: "Ошибка валидации",
+        details,
+      });
+    } else {
+      socket.emit("error_message", {
+        error: "Некорректные данные",
+      });
+    }
+    return null;
+  }
+}
 
 // ─── AnonQueueManager — очередь поиска анонимного чата ───
 
@@ -96,6 +160,9 @@ export function initSocket(httpServer: HttpServer): Server {
       origin: "*",
       credentials: true,
     },
+    maxHttpBufferSize: MAX_HTTP_BUFFER_SIZE,
+    pingTimeout: PING_TIMEOUT,
+    pingInterval: PING_INTERVAL,
   });
 
   const anonQueue = new AnonQueueManager();
@@ -125,55 +192,68 @@ export function initSocket(httpServer: HttpServer): Server {
     const userId = socket.data.userId!;
     console.log(`[socket] Пользователь подключился: ${userId} (${socket.id})`);
 
-    // Регистрируем онлайн-пользователя
-    onlineUsers.set(userId, socket.id);
+    // Регистрируем онлайн-пользователя (поддержка нескольких сокетов)
+    let userSockets = onlineUsers.get(userId);
+    if (!userSockets) {
+      userSockets = new Set();
+      onlineUsers.set(userId, userSockets);
+    }
+    userSockets.add(socket.id);
 
     // ═══════════════════════════════════════════════════════
     //  ДЕЙТИНГ-ЧАТ (Dating Chat)
     // ═══════════════════════════════════════════════════════
 
     /** Присоединение к комнате мэтча */
-    socket.on("join_chat", async ({ matchId }: { matchId: string }) => {
-      if (!matchId) return;
+    socket.on("join_chat", async (raw: unknown) => {
+      const data = validateSocketData(joinChatSchema, raw, socket);
+      if (!data) return;
 
-      // Проверяем, что пользователь является участником мэтча
-      const match = await prisma.match.findFirst({
-        where: {
-          id: matchId,
-          OR: [{ user1Id: userId }, { user2Id: userId }],
-        },
-      });
+      try {
+        // Проверяем, что пользователь является участником мэтча
+        const match = await prisma.match.findFirst({
+          where: {
+            id: data.matchId,
+            OR: [{ user1Id: userId }, { user2Id: userId }],
+          },
+        });
 
-      if (!match) {
+        if (!match) {
+          socket.emit("error_message", {
+            error: "Мэтч не найден или нет доступа",
+          });
+          return;
+        }
+
+        const room = `match:${data.matchId}`;
+        socket.join(room);
+        console.log(`[socket] ${userId} присоединился к ${room}`);
+      } catch (error) {
+        console.error("[socket] join_chat error:", error);
         socket.emit("error_message", {
-          error: "Мэтч не найден или нет доступа",
+          error: "Не удалось присоединиться к чату",
+        });
+      }
+    });
+
+    /** Отправка сообщения в мэтч-чат */
+    socket.on("send_message", async (raw: unknown) => {
+      // Rate limiting
+      if (!rateLimiter.check(`send_message:${userId}`, SEND_MESSAGE_LIMIT)) {
+        socket.emit("error_message", {
+          error: "Слишком много сообщений, попробуйте позже",
         });
         return;
       }
 
-      const room = `match:${matchId}`;
-      socket.join(room);
-      console.log(`[socket] ${userId} присоединился к ${room}`);
-    });
+      const data = validateSocketData(sendMessageSchema, raw, socket);
+      if (!data) return;
 
-    /** Отправка сообщения в мэтч-чат */
-    socket.on(
-      "send_message",
-      async (data: {
-        matchId: string;
-        text?: string;
-        attachments?: string[];
-        audioUrl?: string;
-        duration?: number;
-      }) => {
-        const { matchId, text, attachments, audioUrl, duration } = data;
-
-        if (!matchId) return;
-
+      try {
         // Проверяем доступ к мэтчу
         const match = await prisma.match.findFirst({
           where: {
-            id: matchId,
+            id: data.matchId,
             OR: [{ user1Id: userId }, { user2Id: userId }],
           },
         });
@@ -186,12 +266,12 @@ export function initSocket(httpServer: HttpServer): Server {
         // Сохраняем сообщение в БД
         const message = await prisma.message.create({
           data: {
-            matchId,
+            matchId: data.matchId,
             senderId: userId,
-            text: text ?? null,
-            attachments: attachments ?? [],
-            audioUrl: audioUrl ?? null,
-            duration: duration ?? null,
+            text: data.text ?? null,
+            attachments: data.attachments ?? [],
+            audioUrl: data.audioUrl ?? null,
+            duration: data.duration ?? null,
           },
           include: {
             sender: {
@@ -200,7 +280,7 @@ export function initSocket(httpServer: HttpServer): Server {
           },
         });
 
-        const room = `match:${matchId}`;
+        const room = `match:${data.matchId}`;
         const payload = {
           id: message.id,
           matchId: message.matchId,
@@ -215,21 +295,64 @@ export function initSocket(httpServer: HttpServer): Server {
 
         // Рассылаем всем в комнате (включая отправителя)
         io.to(room).emit("new_message", payload);
+      } catch (error) {
+        console.error("[socket] send_message error:", error);
+        socket.emit("error_message", {
+          error: "Не удалось отправить сообщение",
+        });
       }
-    );
+    });
 
     /** Индикатор набора текста — начало */
-    socket.on("typing_start", ({ matchId }: { matchId: string }) => {
-      if (!matchId) return;
-      const room = `match:${matchId}`;
-      socket.to(room).emit("typing_start", { matchId, userId });
+    socket.on("typing_start", async (raw: unknown) => {
+      const data = validateSocketData(typingSchema, raw, socket);
+      if (!data) return;
+
+      try {
+        // Проверяем участие в мэтче
+        const match = await prisma.match.findFirst({
+          where: {
+            id: data.matchId,
+            OR: [{ user1Id: userId }, { user2Id: userId }],
+          },
+        });
+
+        if (!match) return;
+
+        const room = `match:${data.matchId}`;
+        socket.to(room).emit("typing_start", {
+          matchId: data.matchId,
+          userId,
+        });
+      } catch (error) {
+        console.error("[socket] typing_start error:", error);
+      }
     });
 
     /** Индикатор набора текста — конец */
-    socket.on("typing_stop", ({ matchId }: { matchId: string }) => {
-      if (!matchId) return;
-      const room = `match:${matchId}`;
-      socket.to(room).emit("typing_stop", { matchId, userId });
+    socket.on("typing_stop", async (raw: unknown) => {
+      const data = validateSocketData(typingSchema, raw, socket);
+      if (!data) return;
+
+      try {
+        // Проверяем участие в мэтче
+        const match = await prisma.match.findFirst({
+          where: {
+            id: data.matchId,
+            OR: [{ user1Id: userId }, { user2Id: userId }],
+          },
+        });
+
+        if (!match) return;
+
+        const room = `match:${data.matchId}`;
+        socket.to(room).emit("typing_stop", {
+          matchId: data.matchId,
+          userId,
+        });
+      } catch (error) {
+        console.error("[socket] typing_stop error:", error);
+      }
     });
 
     // ═══════════════════════════════════════════════════════
@@ -237,17 +360,25 @@ export function initSocket(httpServer: HttpServer): Server {
     // ═══════════════════════════════════════════════════════
 
     /** Начать поиск собеседника */
-    socket.on(
-      "start_anon_search",
-      async (data: { targetGender: string; topic: string }) => {
-        const { targetGender, topic } = data;
+    socket.on("start_anon_search", async (raw: unknown) => {
+      // Rate limiting
+      if (
+        !rateLimiter.check(
+          `start_anon_search:${userId}`,
+          START_ANON_SEARCH_LIMIT
+        )
+      ) {
+        socket.emit("error_message", {
+          error: "Слишком много попыток поиска, попробуйте позже",
+        });
+        return;
+      }
 
-        if (!targetGender || !topic) {
-          socket.emit("error_message", {
-            error: "targetGender и topic обязательны",
-          });
-          return;
-        }
+      const data = validateSocketData(startAnonSearchSchema, raw, socket);
+      if (!data) return;
+
+      try {
+        const { targetGender, topic } = data;
 
         console.log(
           `[anon] ${userId} ищет: gender=${targetGender}, topic=${topic}`
@@ -340,8 +471,13 @@ export function initSocket(httpServer: HttpServer): Server {
           socket.emit("anon_search_queued", { position: anonQueue.size });
           console.log(`[anon] ${userId} добавлен в очередь (${anonQueue.size})`);
         }
+      } catch (error) {
+        console.error("[socket] start_anon_search error:", error);
+        socket.emit("error_message", {
+          error: "Не удалось начать поиск",
+        });
       }
-    );
+    });
 
     /** Отменить поиск */
     socket.on("cancel_anon_search", () => {
@@ -351,23 +487,28 @@ export function initSocket(httpServer: HttpServer): Server {
     });
 
     /** Отправка сообщения в анонимный чат */
-    socket.on(
-      "send_anon_message",
-      async (data: {
-        sessionId: string;
-        text?: string;
-        attachments?: string[];
-        audioUrl?: string;
-        duration?: number;
-      }) => {
-        const { sessionId, text, attachments, audioUrl, duration } = data;
+    socket.on("send_anon_message", async (raw: unknown) => {
+      // Rate limiting
+      if (
+        !rateLimiter.check(
+          `send_anon_message:${userId}`,
+          SEND_ANON_MESSAGE_LIMIT
+        )
+      ) {
+        socket.emit("error_message", {
+          error: "Слишком много сообщений, попробуйте позже",
+        });
+        return;
+      }
 
-        if (!sessionId) return;
+      const data = validateSocketData(sendAnonMessageSchema, raw, socket);
+      if (!data) return;
 
+      try {
         // Проверяем, что сессия активна и пользователь — участник
         const session = await prisma.anonSession.findFirst({
           where: {
-            id: sessionId,
+            id: data.sessionId,
             status: "ACTIVE",
             OR: [{ user1Id: userId }, { user2Id: userId }],
           },
@@ -383,19 +524,19 @@ export function initSocket(httpServer: HttpServer): Server {
         // Сохраняем сообщение в таблицу AnonMessage
         const anonMessage = await prisma.anonMessage.create({
           data: {
-            sessionId,
+            sessionId: data.sessionId,
             senderId: userId,
-            text: text ?? null,
-            attachments: attachments ?? [],
-            audioUrl: audioUrl ?? null,
-            duration: duration ?? null,
+            text: data.text ?? null,
+            attachments: data.attachments ?? [],
+            audioUrl: data.audioUrl ?? null,
+            duration: data.duration ?? null,
           },
         });
 
-        const room = `anon:${sessionId}`;
+        const room = `anon:${data.sessionId}`;
         const payload = {
           id: anonMessage.id,
-          sessionId,
+          sessionId: data.sessionId,
           senderId: userId,
           text: anonMessage.text,
           attachments: anonMessage.attachments,
@@ -405,19 +546,24 @@ export function initSocket(httpServer: HttpServer): Server {
         };
 
         io.to(room).emit("new_anon_message", payload);
+      } catch (error) {
+        console.error("[socket] send_anon_message error:", error);
+        socket.emit("error_message", {
+          error: "Не удалось отправить сообщение",
+        });
       }
-    );
+    });
 
     /** Покинуть анонимный чат */
-    socket.on(
-      "leave_anon_chat",
-      async ({ sessionId }: { sessionId: string }) => {
-        if (!sessionId) return;
+    socket.on("leave_anon_chat", async (raw: unknown) => {
+      const data = validateSocketData(leaveAnonChatSchema, raw, socket);
+      if (!data) return;
 
+      try {
         // Закрываем сессию
         const session = await prisma.anonSession.findFirst({
           where: {
-            id: sessionId,
+            id: data.sessionId,
             status: "ACTIVE",
             OR: [{ user1Id: userId }, { user2Id: userId }],
           },
@@ -426,23 +572,30 @@ export function initSocket(httpServer: HttpServer): Server {
         if (!session) return;
 
         await prisma.anonSession.update({
-          where: { id: sessionId },
+          where: { id: data.sessionId },
           data: { status: "CLOSED" },
         });
 
-        const room = `anon:${sessionId}`;
+        const room = `anon:${data.sessionId}`;
 
         // Уведомляем партнёра
-        socket.to(room).emit("anon_partner_left", { sessionId });
+        socket.to(room).emit("anon_partner_left", {
+          sessionId: data.sessionId,
+        });
 
         // Покидаем комнату
         socket.leave(room);
 
         console.log(
-          `[anon] ${userId} покинул сессию ${sessionId}`
+          `[anon] ${userId} покинул сессию ${data.sessionId}`
         );
+      } catch (error) {
+        console.error("[socket] leave_anon_chat error:", error);
+        socket.emit("error_message", {
+          error: "Не удалось покинуть чат",
+        });
       }
-    );
+    });
 
     // ═══════════════════════════════════════════════════════
     //  Отключение
@@ -451,8 +604,14 @@ export function initSocket(httpServer: HttpServer): Server {
     socket.on("disconnect", () => {
       console.log(`[socket] Пользователь отключился: ${userId} (${socket.id})`);
 
-      // Удаляем из онлайн-реестра
-      onlineUsers.delete(userId);
+      // Удаляем конкретный сокет из онлайн-реестра
+      const userSockets = onlineUsers.get(userId);
+      if (userSockets) {
+        userSockets.delete(socket.id);
+        if (userSockets.size === 0) {
+          onlineUsers.delete(userId);
+        }
+      }
 
       // Удаляем из очереди анонимного чата
       anonQueue.removeBySocket(socket.id);

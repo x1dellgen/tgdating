@@ -14,7 +14,7 @@ jobs:
       NODE_ENV: test
       JWT_SECRET: "test-jwt-secret-key-at-least-32-chars-long"
       DATABASE_URL: "file:./test.db"
-      TELEGRAM_BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+      BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
     defaults:
       run:
         working-directory: backend

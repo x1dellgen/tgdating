@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import prisma from "../lib/prisma.js";
-import upload from "../lib/upload.js";
+import upload, { validateUploadedFiles } from "../lib/upload.js";
 import { validate } from "../middleware/validate.middleware.js";
 import { updateProfileSchema, deletePhotoSchema } from "../schemas/user.schema.js";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
@@ -290,6 +290,7 @@ router.put(
 router.post(
   "/me/photos",
   upload.array("photos", 10),
+  validateUploadedFiles,
   async (req: AuthenticatedRequest, res) => {
     try {
       const files = req.files as Express.Multer.File[] | undefined;

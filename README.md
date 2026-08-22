@@ -130,33 +130,40 @@ Backend полностью реализован. Frontend работает с mo
 ```
 tma-dating/
 ├── backend/
-│   ├── prisma/schema.prisma     # Схема БД
+│   ├── prisma/
+│   │   ├── schema.prisma         # Схема БД
+│   │   └── migrations/           # Prisma миграции
 │   ├── src/
-│   │   ├── lib/                 # Prisma, Multer
-│   │   ├── middleware/          # JWT auth
-│   │   ├── routes/              # REST endpoints
-│   │   ├── server.ts            # Точка входа
-│   │   └── socket.ts            # WebSocket
-│   ├── uploads/                 # Загруженные файлы
-│   ├── docker-compose.yml       # Локальная PostgreSQL
-│   ├── .env.example             # Шаблон переменных
+│   │   ├── lib/                  # Prisma, Multer
+│   │   ├── middleware/           # JWT auth
+│   │   ├── routes/               # REST endpoints
+│   │   ├── server.ts             # Точка входа
+│   │   └── socket.ts             # WebSocket
+│   ├── uploads/                  # Загруженные файлы
+│   ├── docker-entrypoint.sh      # Entrypoint для Docker (migrations + start)
+│   ├── Dockerfile                # Multi-stage production build
+│   ├── .env.example              # Шаблон переменных
 │   └── package.json
 ├── frontend/
 │   ├── src/
-│   │   ├── api/                 # HTTP-клиент, типы
-│   │   ├── components/ui/       # UI-компоненты
-│   │   ├── context/             # React Context
-│   │   ├── features/            # Фичи по папкам
-│   │   ├── hooks/               # useTelegram
-│   │   └── shared/              # Константы, типы
+│   │   ├── api/                  # HTTP-клиент, типы
+│   │   ├── components/ui/        # UI-компоненты
+│   │   ├── context/              # React Context
+│   │   ├── features/             # Фичи по папкам
+│   │   ├── hooks/                # useTelegram
+│   │   └── shared/               # Константы, типы
+│   ├── nginx.conf                # Nginx конфигурация (прокси на backend)
+│   ├── Dockerfile                # Multi-stage build (Node → Nginx)
 │   ├── README.md
 │   └── package.json
 ├── docs/
-│   ├── screenshots/             # Скриншоты приложения
+│   ├── screenshots/              # Скриншоты приложения
 │   ├── CHANGELOG.md
 │   ├── ROADMAP.md
 │   ├── DESIGN_BIBLE.md
 │   └── AI_RULES.md
+├── docker-compose.yml            # Production Docker Compose
+├── .env.example                  # Шаблон переменных для Docker Compose
 ├── .gitignore
 └── README.md
 ```
@@ -200,9 +207,12 @@ docker compose up -d
 
 ```bash
 cd backend
-npx prisma db push
-npx prisma generate
+npx prisma migrate deploy   # Применить миграции (production)
+npx prisma generate          # Сгенерировать Prisma Client
 ```
+
+> **Для локальной разработки** можно использовать `npx prisma db push` для быстрого прототипирования.
+> **Для production** всегда используйте `prisma migrate deploy`.
 
 ### 5. Запустить backend
 
@@ -224,9 +234,87 @@ npm run dev
 
 Frontend: `http://localhost:5173`
 
+## Docker Deployment
+
+Проект полностью контейнеризирован. Для запуска через Docker Compose:
+
+### 1. Клонировать и настроить
+
+```bash
+git clone https://github.com/x1dellgen/tgdating.git
+cd tgdating
+cp .env.example .env
+```
+
+Отредактируйте `.env` — заполните `BOT_TOKEN` и `JWT_SECRET` (минимум 32 символа).
+
+### 2. Собрать и запустить
+
+```bash
+docker compose up --build
+```
+
+### 3. Проверить
+
+```bash
+curl http://localhost:5000/api/health
+# {"status":"ok","timestamp":"...","uptime":...}
+```
+
+### Архитектура контейнеров
+
+```
+docker-compose.yml
+├── postgres (postgres:16-alpine)
+│   ├── port: 5432
+│   ├── volume: pgdata → /var/lib/postgresql/data
+│   └── healthcheck: pg_isready
+│
+├── backend (node:20-alpine, multi-stage build)
+│   ├── port: 5000
+│   ├── depends_on: postgres (service_healthy)
+│   ├── healthcheck: GET /api/health
+│   ├── entrypoint: prisma migrate deploy → node dist/server.js
+│   └── volume: uploads → /app/uploads
+│
+└── frontend (nginx:alpine)
+    ├── port: 80
+    ├── depends_on: backend (service_healthy)
+    └── nginx proxy: /api/ → backend:5000
+```
+
+### Управление контейнерами
+
+```bash
+docker compose up -d              # Запуск в фоне
+docker compose down               # Остановить (данные сохраняются)
+docker compose logs -f backend    # Логи backend
+docker compose logs -f postgres   # Логи PostgreSQL
+```
+
+> ⚠️ **Внимание:** `docker compose down` **НЕ удаляет** volumes — данные PostgreSQL сохраняются.
+>
+> ⚠️ `docker compose down -v` **УДАЛЯЕТ** volumes и все данные PostgreSQL. Используйте только для полного сброса.
+
+### Prisma миграции в Docker
+
+При каждом запуске контейнера backend автоматически выполняет `prisma migrate deploy` перед стартом сервера (через `docker-entrypoint.sh`). Это применяет все pending миграции к базе данных.
+
+**НЕ используйте `prisma db push` в production.**
+
 ## Environment Variables
 
-### Backend (`backend/.env`)
+### Docker Compose (`.env` в корне проекта)
+
+| Переменная         | Описание                                    | По умолчанию |
+| ------------------ | ------------------------------------------- | ------------ |
+| `POSTGRES_USER`    | Пользователь PostgreSQL                     | `postgres`   |
+| `POSTGRES_PASSWORD`| Пароль PostgreSQL                           | `postgres`   |
+| `POSTGRES_DB`      | Имя базы данных                             | `tmadating`  |
+| `BOT_TOKEN`        | Токен Telegram Bot                          | —            |
+| `JWT_SECRET`       | Секретный ключ для JWT (минимум 32 символа) | —            |
+
+### Backend (`backend/.env` — для локальной разработки без Docker)
 
 | Переменная     | Описание                                    | Обязательна |
 | -------------- | ------------------------------------------- | ----------- |
@@ -235,7 +323,6 @@ Frontend: `http://localhost:5173`
 | `DIRECT_URL`   | Прямое подключение (для Prisma migrations)  | Для Supabase|
 | `BOT_TOKEN`    | Токен Telegram Bot                          | Да          |
 | `JWT_SECRET`   | Секретный ключ для JWT (минимум 32 символа) | Да          |
-| `MINI_APP_URL` | URL Mini App (для бота)                     | Нет         |
 
 ### Frontend (`frontend/.env`)
 
@@ -280,12 +367,19 @@ curl http://localhost:5000/api/health
 
 ```bash
 cd backend
-npm run dev          # Запуск с hot-reload (tsx watch)
-npm run build        # Компиляция TypeScript
-npm run start        # Запуск скомпилированного кода
-npm run db:push      # Применить схему в БД
-npm run db:generate  # Сгенерировать Prisma Client
-npm run db:studio    # Открыть Prisma Studio (GUI)
+npm run dev              # Запуск с hot-reload (tsx watch)
+npm run build            # Компиляция TypeScript
+npm run start            # Запуск скомпилированного кода
+
+# Prisma — Development (быстрое прототипирование)
+npm run db:push          # Применить схему напрямую в БД (dev only!)
+npm run db:generate      # Сгенерировать Prisma Client
+npm run db:studio        # Открыть Prisma Studio (GUI)
+
+# Prisma — Production (миграции)
+npm run db:migrate:dev       # Создать новую миграцию (dev)
+npm run db:migrate:deploy    # Применить миграции (production)
+npm run db:migrate:status    # Статус миграций
 ```
 
 ### Команды frontend
@@ -300,7 +394,48 @@ npm run lint         # ESLint
 
 ## Тесты
 
-В проекте пока нет автоматизированных тестов. Это запланировано в [ROADMAP.md](docs/ROADMAP.md).
+Backend содержит **79 автоматизированных тестов** (4 тест-файла):
+
+| Файл | Тестов |
+| ---- | ------ |
+| `env.test.ts` | 8 |
+| `schemas.test.ts` | 15 |
+| `socket.test.ts` | 49 |
+| `api.test.ts` | 7 |
+
+```bash
+cd backend
+npm test          # vitest run → 79/79 passed
+```
+
+Тесты покрывают: валидацию окружения, Zod-схемы, REST API (health, auth, users, swipes, matches, chat), WebSocket-события и rate limiting.
+
+## Деплой базы данных
+
+### Чистая PostgreSQL БД (новая)
+
+Для новой базы данных, где таблиц ещё нет:
+
+```bash
+npx prisma migrate deploy
+```
+
+### Существующая Supabase БД (таблицы уже созданы через `prisma db push`)
+
+Если таблицы уже были созданы вручную через `prisma db push`, необходимо сначала отметить baseline-миграцию как применённую:
+
+```bash
+# 1. Отметить baseline-миграцию как уже применённую
+npx prisma migrate resolve --applied 20260821000000_init_baseline
+
+# 2. Проверить статус миграций
+npx prisma migrate status
+
+# 3. Применить будущие миграции (если появятся)
+npx prisma migrate deploy
+```
+
+> ⚠️ Шаг 3 (`migrate deploy`) необходим только при появлении новых миграций после baseline.
 
 ## AI-assisted Development
 
